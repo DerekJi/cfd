@@ -1,0 +1,23 @@
+# Core Dependencies
+backtrader>=1.9.78
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# Data Source
+oandapyV20>=0.7.2
+
+# Technical Analysis
+TA-Lib>=0.4.28  # Optional: pip install TA-Lib
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+# Logging and Reporting
+tabulate>=0.9.0
+seaborn>=0.12.0
+
+# Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
