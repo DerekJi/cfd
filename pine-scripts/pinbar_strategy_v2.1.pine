@@ -1,0 +1,78 @@
+//@version=5
+indicator("PinBar 决策辅助系统 (视觉回测版)", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// --- 1. 输入参数 ---
+lookback      = input.int(5, "局部低点回看周期", minval=1, tooltip="Pin Bar的Low必须是最近N根K线的最低点")
+atr_len       = input.int(14, "ATR 周期")
+offset_ticks  = input.int(5, "挂单 Offset (Ticks)") * syminfo.mintick
+rr_ratio      = input.float(1.2, "盈亏比 (RR)")
+min_score     = input.int(70, "显示信号的最低评分门槛", minval=0, maxval=100)
+
+// 手动关键位输入 (你可以在复盘时填入你画的支撑阻力位价格)
+manual_lv1    = input.price(0, "手动关键位 1", tooltip="设为0则不启用")
+manual_lv2    = input.price(0, "手动关键位 2")
+
+// --- 2. 技术指标计算 ---
+ema20  = ta.ema(close, 20)
+ema60  = ta.ema(close, 60)
+ema80  = ta.ema(close, 80)
+ema200 = ta.ema(close, 200)
+atr    = ta.atr(atr_len)
+
+// EMA20 斜率 (Slope) 归一化计算
+slope = (ema20 - ema20[5]) / (5 * atr)
+is_steep = slope > 0.1
+
+// --- 3. Pin Bar 形态逻辑 ---
+body        = math.abs(open - close)
+range_len   = high - low
+lower_wick  = math.min(open, close) - low
+upper_wick  = high - math.max(open, close)
+
+// 严格遵循你定义的形态学比例
+is_pinbar = (range_len >= atr) and (body / range_len <= 0.3) and (lower_wick / range_len >= 0.6) and (upper_wick / range_len <= 0.2)
+is_local_low = low == ta.lowest(low, lookback)
+
+// --- 4. 评分系统 (修正语法及逻辑) ---
+float score = 0.0
+if is_pinbar and is_local_low
+    score := 50.0 // 基础分
+    
+    // 趋势加分：EMA多头排列
+    if ema20 > ema60 and ema60 > ema80 and ema80 > ema200
+        score := score + 15.0
+        
+    // 动能加分：均线陡峭
+    if is_steep
+        score := score + 10.0
+        
+    // 价格站稳均线加分
+    if close > ema20
+        score := score + 10.0
+        
+    // 关键位共振加分 (靠近EMA20或手动位)
+    dist_ema20 = math.abs(low - ema20) / atr
+    dist_lv1   = manual_lv1 > 0 ? math.abs(low - manual_lv1) / atr : 999.0
+    if dist_ema20 < 0.2 or dist_lv1 < 0.2
+        score := score + 15.0
+
+// --- 5. 视觉回测绘图 ---
+// 仅在得分达标时绘制
+if score >= min_score
+    entry_p = high + offset_ticks
+    sl_p    = low - offset_ticks
+    tp_p    = entry_p + (entry_p - sl_p) * rr_ratio
+    
+    // 绘制评分标签
+    label.new(bar_index, high, text="Score: " + str.tostring(score, "#"), color=score >= 85 ? color.green : color.new(color.gray, 30), textcolor=color.white, style=label.style_label_down)
+
+    // 绘制交易计划预测线 (向右延伸10根K线)
+    line.new(bar_index, entry_p, bar_index + 10, entry_p, color=color.blue, width=2)
+    line.new(bar_index, tp_p, bar_index + 10, tp_p, color=color.green, width=1, style=line.style_dashed)
+    line.new(bar_index, sl_p, bar_index + 10, sl_p, color=color.red, width=1, style=line.style_dashed)
+
+// --- 6. 基础图表绘制 ---
+plot(ema20,  color=color.new(color.blue, 30),   title="EMA20")
+plot(ema60,  color=color.new(color.orange, 50), title="EMA60")
+plot(ema80,  color=color.new(color.red, 50),    title="EMA80")
+plot(ema200, color=color.new(color.white, 20),   title="EMA200", linewidth=2)

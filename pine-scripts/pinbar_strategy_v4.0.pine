@@ -1,0 +1,211 @@
+//@version=5
+indicator("PinBar 突破策略 V2.1", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// --- 1. 参数设置 ---
+lookback      = input.int(5, "局部极值回看周期", minval=3, maxval=10)
+atr_len       = input.int(14, "ATR 周期", minval=10, maxval=20)
+atr_mult      = input.float(1.0, "ATR 乘数", minval=0.8, maxval=1.5, step=0.1)
+offset_ticks  = input.int(5, "挂单 Offset (Ticks)") * syminfo.mintick
+rr_ratio      = input.float(1.2, "盈亏比 (RR)", minval=1.0, maxval=2.0, step=0.1)
+min_score     = input.int(50, "显示门槛评分", minval=0, maxval=100)
+body_ratio_max = input.float(0.3, "实体占比上限", minval=0.2, maxval=0.4, step=0.05)
+lower_ratio_min = input.float(0.6, "下影线占比下限", minval=0.5, maxval=0.7, step=0.05)
+upper_ratio_max = input.float(0.2, "上影线占比上限", minval=0.1, maxval=0.3, step=0.05)
+slope_period  = input.int(5, "斜率计算周期", minval=3, maxval=7)
+slope_threshold = input.float(0.1, "陡峭度阈值", minval=0.05, maxval=0.15, step=0.01)
+blast_protection = input.float(3.0, "爆仓保护倍数", minval=2.0, maxval=4.0, step=0.5)
+
+// --- 2. 指标计算 ---
+ema20  = ta.ema(close, 20)
+ema60  = ta.ema(close, 60)
+ema80  = ta.ema(close, 80)
+ema200 = ta.ema(close, 200)
+atr    = ta.atr(atr_len)
+
+// 为每个关键EMA计算斜率
+slope20 = (ema20 - ema20[slope_period]) / (slope_period * atr)
+slope60 = (ema60 - ema60[slope_period]) / (slope_period * atr)
+slope80 = (ema80 - ema80[slope_period]) / (slope_period * atr)
+
+// --- 3. 基础形态判断 ---
+range_len = high - low
+body      = math.abs(open - close)
+lower_w   = math.min(open, close) - low
+upper_w   = high - math.max(open, close)
+
+// Pin Bar 5个条件判断
+bool is_pin_valid = false
+
+// 1. 最小波动限制
+if range_len >= atr * atr_mult
+    // 2. 实体占比约束
+    if body / range_len <= body_ratio_max
+        is_pin_valid := true
+
+// 爆仓保护：波动过大则放弃
+if range_len > blast_protection * atr
+    is_pin_valid := false
+
+// --- 4. 多头 Pin Bar 判定 ---
+bool is_long_pin = false
+if is_pin_valid
+    // 3. 下影线占比（多头：重心偏上）
+    bool lower_ratio_ok = lower_w / range_len >= lower_ratio_min
+    // 4. 上影线占比约束（多头：上影线短）
+    bool upper_ratio_ok = upper_w / range_len <= upper_ratio_max
+    // 5. 局部低点确认
+    bool is_local_low = low == ta.lowest(low, lookback)
+    
+    if lower_ratio_ok and upper_ratio_ok and is_local_low
+        is_long_pin := true
+
+// --- 5. 空头 Pin Bar 判定 ---
+bool is_short_pin = false
+if is_pin_valid
+    // 3. 上影线占比（空头：重心偏下）
+    bool upper_ratio_ok = upper_w / range_len >= lower_ratio_min
+    // 4. 下影线占比约束（空头：下影线短）
+    bool lower_ratio_ok = lower_w / range_len <= upper_ratio_max
+    // 5. 局部高点确认
+    bool is_local_high = high == ta.highest(high, lookback)
+    
+    if upper_ratio_ok and lower_ratio_ok and is_local_high
+        is_short_pin := true
+
+// --- 6. 关键EMA数组 ---
+key_emas = array.from(ema20, ema60, ema80)
+key_slopes = array.from(slope20, slope60, slope80)
+
+// --- 7. 多头准入条件检查 ---
+bool long_signal = false
+int ema_touch_count_long = 0
+
+if is_long_pin
+    for i = 0 to array.size(key_emas) - 1
+        ema_val = array.get(key_emas, i)
+        slope_val = array.get(key_slopes, i)
+        
+        // 3.1 趋势一致性：当前关键EMA > EMA200
+        bool trend_ok = ema_val > ema200
+        // 3.2 位置约束：收盘价 > 当前关键EMA
+        bool position_ok = close > ema_val
+        
+        // 3.3 触碰或靠近逻辑
+        bool touching = false
+        // 情况A：常规情况（刺穿）
+        if high > ema_val and low < ema_val
+            touching := true
+        // 情况B：强动能情况（靠近）
+        else if slope_val > slope_threshold and low > ema_val and (low - ema_val) / atr < 0.2
+            touching := true
+        
+        // 满足所有条件则计数
+        if trend_ok and position_ok and touching
+            ema_touch_count_long := ema_touch_count_long + 1
+    
+    // 至少触碰一个关键EMA才有效
+    if ema_touch_count_long > 0
+        long_signal := true
+
+// --- 8. 空头准入条件检查 ---
+bool short_signal = false
+int ema_touch_count_short = 0
+
+if is_short_pin
+    for i = 0 to array.size(key_emas) - 1
+        ema_val = array.get(key_emas, i)
+        slope_val = array.get(key_slopes, i)
+        
+        // 趋势一致性：当前关键EMA < EMA200
+        bool trend_ok = ema_val < ema200
+        // 位置约束：收盘价 < 当前关键EMA
+        bool position_ok = close < ema_val
+        
+        // 触碰或靠近逻辑
+        bool touching = false
+        // 情况A：常规情况（刺穿）
+        if low < ema_val and high > ema_val
+            touching := true
+        // 情况B：强动能情况（靠近）
+        else if slope_val < -slope_threshold and high < ema_val and (ema_val - high) / atr < 0.2
+            touching := true
+        
+        if trend_ok and position_ok and touching
+            ema_touch_count_short := ema_touch_count_short + 1
+    
+    if ema_touch_count_short > 0
+        short_signal := true
+
+// --- 9. 评分系统（简化版） ---
+float l_score = 0.0
+if long_signal
+    l_score := 50.0  // 基础分
+    
+    // EMA排列顺序加分
+    if ema20 > ema60 and ema60 > ema80 and ema80 > ema200
+        l_score := l_score + 15.0
+    
+    // 斜率加分
+    if slope20 > slope_threshold
+        l_score := l_score + 10.0
+    
+    // 收盘位置加分
+    if close > ema20
+        l_score := l_score + 10.0
+    
+    // 触碰多个EMA加分
+    if ema_touch_count_long >= 2
+        l_score := l_score + 10.0
+    if ema_touch_count_long >= 3
+        l_score := l_score + 5.0
+
+float s_score = 0.0
+if short_signal
+    s_score := 50.0  // 基础分
+    
+    // EMA排列顺序加分
+    if ema20 < ema60 and ema60 < ema80 and ema80 < ema200
+        s_score := s_score + 15.0
+    
+    // 斜率加分
+    if slope20 < -slope_threshold
+        s_score := s_score + 10.0
+    
+    // 收盘位置加分
+    if close < ema20
+        s_score := s_score + 10.0
+    
+    // 触碰多个EMA加分
+    if ema_touch_count_short >= 2
+        s_score := s_score + 10.0
+    if ema_touch_count_short >= 3
+        s_score := s_score + 5.0
+
+// --- 10. 绘图与标记 ---
+if l_score >= min_score
+    entry = high + offset_ticks
+    sl    = low - offset_ticks
+    // 止盈公式：入场价格 + (入场价格 - 止损价格) × 盈亏比
+    tp    = entry + (entry - sl) * rr_ratio
+    
+    label.new(bar_index, low, "📌 " + str.tostring(l_score, "#"), color=color.new(color.green, 20), textcolor=color.white, style=label.style_label_up, size=size.normal)
+    line.new(bar_index, entry, bar_index + 10, entry, color=color.yellow, width=2, style=line.style_dashed)
+    line.new(bar_index, tp, bar_index + 10, tp, color=color.green, width=2)
+    line.new(bar_index, sl, bar_index + 10, sl, color=color.red, width=2)
+
+if s_score >= min_score
+    entry = low - offset_ticks
+    sl    = high + offset_ticks
+    // 止盈公式：入场价格 - (止损价格 - 入场价格) × 盈亏比
+    tp    = entry - (sl - entry) * rr_ratio
+    
+    label.new(bar_index, high, "📌 " + str.tostring(s_score, "#"), color=color.new(color.red, 20), textcolor=color.white, style=label.style_label_down, size=size.normal)
+    line.new(bar_index, entry, bar_index + 10, entry, color=color.yellow, width=2, style=line.style_dashed)
+    line.new(bar_index, tp, bar_index + 10, tp, color=color.green, width=2)
+    line.new(bar_index, sl, bar_index + 10, sl, color=color.red, width=2)
+
+// --- 11. EMA 绘制 ---
+plot(ema20,  color=color.new(color.blue, 0),   title="EMA 20")
+plot(ema60,  color=color.new(color.orange, 0), title="EMA 60")
+plot(ema80,  color=color.new(color.purple, 0), title="EMA 80")
+plot(ema200, color=color.new(color.gray, 0),   title="EMA 200")

@@ -1,0 +1,122 @@
+//@version=5
+indicator("PinBar 多空双向系统 V3.7", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// --- 1. 参数设置 ---
+lookback      = input.int(5, "局部极值回看周期")
+atr_len       = input.int(14, "ATR 周期")
+offset_ticks  = input.int(5, "挂单 Offset (Ticks)") * syminfo.mintick
+rr_ratio      = input.float(1.2, "盈亏比 (RR)")
+min_score     = input.int(91, "显示门槛评分")
+
+// --- 2. 指标计算 ---
+ema20  = ta.ema(close, 20)
+ema60  = ta.ema(close, 60)
+ema80  = ta.ema(close, 80)
+ema200 = ta.ema(close, 200)
+atr    = ta.atr(atr_len)
+
+
+// --- 3. 基础形态判断 ---
+range_len = math.abs(high - low)
+body      = math.abs(open - close)
+lower_w   = math.abs(math.min(open, close) - low)
+upper_w   = math.abs(high - math.max(open, close))
+
+// 形态学过滤: 实体占比 <= 0.3, 下/上影线占比依据多空方向而定
+is_long_pin = (range_len >= 0.6*atr) and (body / range_len <= 0.5) and (lower_w / range_len) >= 0.5 and (upper_w / range_len) <= 0.2
+is_short_pin = (range_len >= 0.6*atr) and (body / range_len <= 0.5) and (upper_w / range_len) >= 0.5 and (lower_w / range_len) <= 0.2
+
+// --- 4. 循环判定 Key EMA 组 (20, 60, 80) ---
+key_emas = array.from(ema20, ema60, ema80)
+bool is_touching_ema_long  = false
+bool is_touching_ema_short = false
+
+// 循环判定: 价格是否与任一 Key EMA 发生交互
+for i = 0 to array.size(key_emas) - 1
+    ema = array.get(key_emas, i)
+
+    // 斜率计算: 过去5根K线，EMA20上升幅度超过0.5倍ATR
+    slope  = math.abs(ema - ema[5]) / (5 * atr)
+
+    // 多头: Low刺穿或靠近均线，且Close收在均线上方
+    if (low <= ema or (slope > 0.1 and (low - ema)/atr < 0.2)) and close > ema
+        is_touching_ema_long := true
+    // 空头: High刺穿或靠近均线，且Close收在均线下方
+    if (high >= ema or (slope < -0.1 and (ema - high)/atr < 0.2)) and close < ema
+        is_touching_ema_short := true
+
+// --- 5. 信号判定与评分 ---
+is_l_low = low == ta.lowest(low, lookback)
+is_s_high = high == ta.highest(high, lookback)
+
+float l_score = 0.0
+// 多头核心准入: Pin形态 + 5日低点 + 在Base EMA上方 + 触碰Key EMA
+if is_long_pin and is_l_low and close > ema200
+    l_score := 65.0
+    if ema20 > ema60 and ema60 > ema80 and ema80 > ema200
+        l_score := l_score + 15.0
+    if is_touching_ema_long
+        l_score := l_score + 10.0
+    if (lower_w / range_len) >= 0.6
+        l_score := l_score + 10.0
+    if (lower_w / range_len) >= 0.7
+        l_score := l_score + 5.0
+    if (lower_w / range_len) >= 0.8
+        l_score := l_score + 5.0
+    if (upper_w / range_len) <= 0.1
+        l_score := l_score + 5.0
+    if open < close
+        l_score := l_score + 10.0
+    if body / range_len <= 0.4
+        l_score := l_score + 5.0
+    if body / range_len <= 0.3
+        l_score := l_score + 5.0
+
+float s_score = 0.0
+// 空头核心准入
+if is_short_pin and is_s_high and close < ema200 
+    s_score := 65.0
+    if ema20 < ema60 and ema60 < ema80 and ema80 < ema200
+        s_score := s_score + 15.0
+    if is_touching_ema_short
+        s_score := s_score + 10.0
+    if (upper_w / range_len) >= 0.6
+        s_score := s_score + 10.0
+    if (upper_w / range_len) >= 0.7
+        s_score := s_score + 5.0
+    if (upper_w / range_len) >= 0.8
+        s_score := s_score + 5.0
+    if (upper_w / range_len) <= 0.1
+        s_score := s_score + 5.0
+    if open > close
+        s_score := s_score + 10.0
+    if body / range_len <= 0.4
+        s_score := s_score + 5.0
+    if body / range_len <= 0.3
+        s_score := s_score + 5.0
+
+// --- 6. 绘图与执行规则 ---
+if l_score >= min_score
+    entry = high + offset_ticks
+    sl    = low - offset_ticks
+    // TP公式: 开仓位置 + (High - Low + 2*Offset) * RR
+    tp    = entry + (range_len + 2 * offset_ticks) * rr_ratio
+    label.new(bar_index, high, "L Score:" + str.tostring(l_score, "#"), color=color.new(color.green, 30), textcolor=color.white, style=label.style_label_down)
+    line.new(bar_index, entry, bar_index + 10, entry, color=color.blue, width=2)
+    line.new(bar_index, tp, bar_index + 10, tp, color=color.green, style=line.style_dashed)
+    line.new(bar_index, sl, bar_index + 10, sl, color=color.red, style=line.style_dashed)
+
+if s_score >= min_score
+    entry = low - offset_ticks
+    sl    = high + offset_ticks
+    tp    = entry - (range_len + 2 * offset_ticks) * rr_ratio
+    label.new(bar_index, low, "S Score:" + str.tostring(s_score, "#"), color=color.new(color.red, 30), textcolor=color.white, style=label.style_label_up)
+    line.new(bar_index, entry, bar_index + 10, entry, color=color.blue, width=2)
+    line.new(bar_index, tp, bar_index + 10, tp, color=color.green, style=line.style_dashed, width=2)
+    line.new(bar_index, sl, bar_index + 10, sl, color=color.red, style=line.style_dashed, width=2)
+
+// --- 7. 视觉优化 (浅色主题) ---
+plot(ema20,  color=color.new(color.blue, 30),   title="EMA20")
+plot(ema60,  color=color.new(color.orange, 30), title="EMA60")
+plot(ema80,  color=color.new(color.red, 30),    title="EMA80")
+plot(ema200, color=color.new(color.gray, 0),    title="EMA200", linewidth=2)
