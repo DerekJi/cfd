@@ -152,13 +152,22 @@ if state == 2 and state[1] != 2
         line.delete(peak_line)
 
 // 状态 3: 橙色虚线（Peak触发线）+ 红色圆圈（Dip止损位）
+var line peak_trigger_line = na
+var label wait_entry_label = na
+
 if state == 3
     // 在Peak_Price位置画橙色虚线
-    line.new(bar_index, peak_price, bar_index + 1, peak_price, color=color.orange, style=line.style_dashed, width=1, extend=extend.right)
-    // 在Dip_Price位置画红色小圆圈
-    plotshape(true, style=shape.circle, location=location.absolute, color=color.red, size=size.tiny, title="潜在止损位", offset=0)
+    if not na(peak_trigger_line)
+        line.delete(peak_trigger_line)
+    peak_trigger_line := line.new(bar_index, peak_price, bar_index + 1, peak_price, color=color.orange, style=line.style_dashed, width=1, extend=extend.right)
+    
     // "等待入场"标签
-    label.new(bar_index, retracing_low, "等待入场", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
+    if not na(wait_entry_label)
+        label.delete(wait_entry_label)
+    wait_entry_label := label.new(bar_index, retracing_low, "等待入场", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
+
+// 在Dip_Price位置画红色小圆圈（必须在全局作用域）
+plotshape(state == 3, style=shape.circle, location=location.belowbar, color=color.red, size=size.tiny, title="潜在止损位")
 
 // 状态 4: 入场和止损标记
 var label entry_label = na
@@ -188,9 +197,6 @@ bgcolor(show_background and state == 4 ? color.new(color.green, 95) : na, title=
 var table info_table = table.new(position.top_right, 2, 8, border_width=1)
 
 if barstate.islast
-    // 清空表格
-    table.clear(info_table, 0, 0, 2, 8)
-    
     // 状态名称映射
     state_name = switch state
         0 => "IDLE"
