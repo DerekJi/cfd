@@ -1,0 +1,240 @@
+//@version=5
+indicator("Range Breakout Indicator V3.0", shorttitle="RBO V3.0", overlay=true)
+
+// ==================== 输入参数 ====================
+UP_line = input.float(0.0, "UP线价格（手动设置）", step=0.0001)
+DOWN_line = input.float(0.0, "DOWN线价格（手动设置）", step=0.0001)
+confirm_seconds = input.int(30, "突破确认秒数", minval=10, maxval=300)
+buffer_multiplier = input.float(0.2, "Buffer系数（倍ATR）", step=0.1, minval=0.1, maxval=1.0)
+atr_length = input.int(14, "ATR周期", minval=5, maxval=50)
+trailing_stop_enabled = input.bool(true, "启用移动止损显示")
+
+// 背景色显示开关
+show_background = input.bool(true, "显示状态背景色")
+
+// ==================== 技术指标计算 ====================
+atr_value = ta.atr(atr_length)
+buffer = atr_value * buffer_multiplier
+mid_line = (UP_line + DOWN_line) / 2
+
+// ==================== 状态变量 ====================
+var int state = 0  // 0=IDLE, 1=TOUCHING, 2=TOUCHED, 3=RETRACED, 4=POSITION
+var float peak_price = na
+var float dip_price = na
+var int touch_start_bar = na
+var float entry_price = na
+var float stop_loss = na
+var float initial_stop_distance = na
+var int entry_bar = na
+var int retrace_start_bar = na
+
+// 临时变量用于跟踪当前状态的高低点
+var float touching_high = na
+var float retracing_low = na
+
+// ==================== 状态机逻辑 ====================
+
+// 计算确认所需的K线数量（30秒确认时间）
+// 5分钟图：300秒/根，30秒 ≈ 0.1根K线，实际要求至少1根完整K线
+timeframe_seconds = timeframe.in_seconds()
+confirm_bars = math.max(1, math.ceil(confirm_seconds / timeframe_seconds))
+
+// 状态 0: IDLE（静默）
+if state == 0
+    if close > UP_line
+        state := 1
+        touch_start_bar := bar_index
+        touching_high := high
+        
+// 状态 1: TOUCHING（触碰中）
+if state == 1
+    // 更新触碰期间的最高价
+    touching_high := math.max(touching_high, high)
+    
+    // 检查是否持续时间足够
+    touching_duration = bar_index - touch_start_bar
+    
+    if close <= UP_line
+        // 跌破UP线，重置到IDLE
+        state := 0
+        touch_start_bar := na
+        touching_high := na
+    else if touching_duration >= confirm_bars
+        // 确认突破成功
+        state := 2
+        peak_price := touching_high
+        
+// 状态 2: TOUCHED_SUCCESS（有效突破）
+if state == 2
+    if close <= (UP_line - buffer)
+        // 回落到确认线以下，进入回调状态
+        state := 3
+        retracing_low := low
+        retrace_start_bar := bar_index
+        
+// 状态 3: RETRACED（回落确认）
+if state == 3
+    // 更新回落期间的最低价
+    retracing_low := math.min(retracing_low, low)
+    
+    // 计算回落持续时间（分钟数）
+    retrace_duration_bars = bar_index - retrace_start_bar
+    retrace_duration_minutes = retrace_duration_bars * (timeframe_seconds / 60)
+    
+    // 检查失效条件
+    if retracing_low < mid_line
+        // 跌破中轴，失效
+        state := 0
+        retracing_low := na
+        retrace_start_bar := na
+        peak_price := na
+    else if close < UP_line
+        // 假突破，跌破UP线
+        state := 0
+        retracing_low := na
+        retrace_start_bar := na
+        peak_price := na
+    else if retrace_duration_minutes > 30
+        // 超时失效（超过30分钟）
+        state := 0
+        retracing_low := na
+        retrace_start_bar := na
+        peak_price := na
+    else if close > peak_price
+        // 触发入场
+        state := 4
+        dip_price := retracing_low
+        entry_price := close
+        entry_bar := bar_index
+        // 初始止损 = Dip - 1倍ATR（模拟Spread）
+        stop_loss := dip_price - atr_value
+        initial_stop_distance := entry_price - dip_price
+        
+// 状态 4: POSITION（持仓管理）
+if state == 4
+    // 移动止损逻辑
+    if trailing_stop_enabled
+        // 检查是否创新高
+        bars_since_entry = bar_index - entry_bar
+        if bars_since_entry > 0
+            new_high = ta.highest(high, bars_since_entry + 1)
+            if new_high > entry_price
+                // 更新移动止损
+                stop_loss := new_high - initial_stop_distance
+    
+    // 检查是否触发止损
+    if close < stop_loss
+        // 出场
+        state := 0
+        entry_price := na
+        stop_loss := na
+        dip_price := na
+        peak_price := na
+        entry_bar := na
+
+// ==================== 图表可视化 ====================
+
+// 绘制UP/DOWN/MID线
+plot(UP_line > 0 ? UP_line : na, "UP线", color=color.blue, linewidth=2, style=plot.style_line)
+plot(DOWN_line > 0 ? DOWN_line : na, "DOWN线", color=color.red, linewidth=2, style=plot.style_line)
+plot(UP_line > 0 and DOWN_line > 0 ? mid_line : na, "中轴线", color=color.gray, linewidth=1, style=plot.style_linebr, display=display.all)
+
+// 状态 1: 黄色小圆点
+plotshape(state == 1, style=shape.circle, location=location.abovebar, color=color.yellow, size=size.tiny, title="触碰中")
+
+// 状态 2: 绿色箭头标记（在Peak位置）
+var line peak_line = na
+if state == 2 and state[1] != 2
+    // 在Peak_Price位置画绿色箭头
+    label.new(bar_index, peak_price, "✓", style=label.style_none, color=color.new(color.green, 100), textcolor=color.green, size=size.normal)
+    // 画UP线位置的水平虚线
+    if not na(peak_line)
+        line.delete(peak_line)
+
+// 状态 3: 橙色虚线（Peak触发线）+ 红色圆圈（Dip止损位）
+if state == 3
+    // 在Peak_Price位置画橙色虚线
+    line.new(bar_index, peak_price, bar_index + 1, peak_price, color=color.orange, style=line.style_dashed, width=1, extend=extend.right)
+    // 在Dip_Price位置画红色小圆圈
+    plotshape(true, style=shape.circle, location=location.absolute, color=color.red, size=size.tiny, title="潜在止损位", offset=0)
+    // "等待入场"标签
+    label.new(bar_index, retracing_low, "等待入场", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
+
+// 状态 4: 入场和止损标记
+var label entry_label = na
+var line stop_line = na
+
+if state == 4 and state[1] != 4
+    // BUY入场信号
+    entry_label := label.new(bar_index, low, "BUY", style=label.style_triangleup, color=color.green, textcolor=color.white, size=size.large)
+
+if state == 4
+    // 绘制移动止损线
+    if trailing_stop_enabled
+        if not na(stop_line)
+            line.delete(stop_line)
+        stop_line := line.new(bar_index - 1, stop_loss, bar_index, stop_loss, color=color.red, style=line.style_dashed, width=2, extend=extend.right)
+
+// 出场信号
+if state == 0 and state[1] == 4
+    label.new(bar_index, high, "EXIT", style=label.style_triangledown, color=color.red, textcolor=color.white, size=size.large)
+
+// 背景色标记
+bgcolor(show_background and state == 1 ? color.new(color.yellow, 90) : na, title="TOUCHING背景")
+bgcolor(show_background and state == 3 ? color.new(color.orange, 90) : na, title="RETRACED背景")
+bgcolor(show_background and state == 4 ? color.new(color.green, 95) : na, title="POSITION背景")
+
+// ==================== 信息面板 ====================
+var table info_table = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast
+    // 清空表格
+    table.clear(info_table, 0, 0, 2, 8)
+    
+    // 状态名称映射
+    state_name = switch state
+        0 => "IDLE"
+        1 => "TOUCHING"
+        2 => "TOUCHED"
+        3 => "RETRACED"
+        4 => "POSITION"
+        => "UNKNOWN"
+    
+    // 状态颜色
+    state_color = switch state
+        0 => color.gray
+        1 => color.yellow
+        2 => color.green
+        3 => color.orange
+        4 => color.lime
+        => color.white
+    
+    // 填充信息
+    table.cell(info_table, 0, 0, "当前状态:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 0, state_name, text_color=color.white, bgcolor=color.new(state_color, 70))
+    
+    table.cell(info_table, 0, 1, "Peak Price:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 1, na(peak_price) ? "N/A" : str.tostring(peak_price, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 2, "Dip Price:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 2, na(dip_price) ? "N/A" : str.tostring(dip_price, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 3, "Entry Price:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 3, na(entry_price) ? "N/A" : str.tostring(entry_price, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 4, "Stop Loss:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 4, na(stop_loss) ? "N/A" : str.tostring(stop_loss, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 5, "ATR:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 5, str.tostring(atr_value, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 6, "Buffer:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 6, str.tostring(buffer, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 70))
+    
+    table.cell(info_table, 0, 7, "MID Line:", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    table.cell(info_table, 1, 7, UP_line > 0 and DOWN_line > 0 ? str.tostring(mid_line, format.mintick) : "N/A", text_color=color.white, bgcolor=color.new(color.gray, 70))
+
+// ==================== Alert条件（可选增强）====================
+alertcondition(state == 2 and state[1] == 1, title="突破确认", message="价格突破UP线并确认！")
+alertcondition(state == 4 and state[1] == 3, title="入场信号", message="触发买入信号！")
+alertcondition(state == 0 and state[1] == 4, title="出场信号", message="触发止损出场！")
