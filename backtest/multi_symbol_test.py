@@ -22,7 +22,7 @@ if sys.version_info >= (3, 7):
 import backtrader as bt
 from strategies.trend_filter_strategy_v1 import TrendFilterStrategy
 from utils.data_loader import CSVDataLoader
-from utils.forex_commission import create_forex_commission
+from utils.forex_commission import create_forex_commission, get_quote_usd_rate
 
 
 # 测试配置
@@ -116,6 +116,7 @@ def test_single_symbol(symbol, config, params, silent=True):
             analysis_bars=5,
             pullback_wait_bars=20,
             risk_percent=1.0,
+            quote_usd_rate=get_quote_usd_rate(symbol),
             debug=False  # 静默模式
         )
         

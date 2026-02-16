@@ -22,7 +22,7 @@ if sys.version_info >= (3, 7):
 import backtrader as bt
 from strategies.trend_filter_strategy_v1 import TrendFilterStrategy
 from utils.data_loader import CSVDataLoader
-from utils.forex_commission import create_forex_commission
+from utils.forex_commission import create_forex_commission, get_quote_usd_rate
 
 
 # Blue Guardian规则
@@ -159,6 +159,7 @@ def run_backtest(symbol, config, initial_cash, total_account, risk_pct, num_symb
         cerebro.adddata(data_feed)
         
         # 添加策略（使用修复后的参数）
+        quote_rate = get_quote_usd_rate(symbol)
         cerebro.addstrategy(
             TrendFilterStrategy,
             up_period=20,
@@ -173,6 +174,7 @@ def run_backtest(symbol, config, initial_cash, total_account, risk_pct, num_symb
             total_account_size=total_account,  # ✅ 总账户规模
             risk_percent=risk_pct,             # ✅ 总风险百分比
             num_symbols=num_symbols,           # ✅ 品种数量
+            quote_usd_rate=quote_rate,         # ✅ 交叉货币对PnL转换率
             debug=False
         )
         
@@ -184,7 +186,7 @@ def run_backtest(symbol, config, initial_cash, total_account, risk_pct, num_symb
         # 对GBPUSD等直接报价货币对，使用标准公式: PnL = size × Δprice
         forex_comm = create_forex_commission(
             symbol=symbol,
-            commission_per_lot=5.0,  # $5/手开仓费
+            commission_per_lot=2.5,  # $2.5/手/单边 (Backtrader开+平各调一次 = $5/手 Round Turn)
             leverage=30.0,           # 30倍杠杆
         )
         cerebro.broker.addcommissioninfo(forex_comm)

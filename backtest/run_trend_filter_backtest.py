@@ -20,14 +20,15 @@ import backtrader as bt
 from config_trend_filter import get_default_config
 from strategies.trend_filter_strategy_v1 import TrendFilterStrategy
 from utils.data_loader import CSVDataLoader
-from utils.forex_commission import create_forex_commission
+from utils.forex_commission import create_forex_commission, get_quote_usd_rate
 
 
-def run_trend_filter_backtest(use_sample_data=False):
+def run_trend_filter_backtest(use_sample_data=False, config=None):
     """运行趋势过滤策略回测"""
     
     # 加载配置
-    config = get_default_config()
+    if config is None:
+        config = get_default_config()
     
     print("="*80)
     print("                 趋势过滤突破策略回测系统 V1.0")
@@ -64,6 +65,11 @@ def run_trend_filter_backtest(use_sample_data=False):
     data_feed = loader.to_backtrader_feed()
     cerebro.adddata(data_feed)
     
+    # ✅ 从数据文件路径推断品种名称
+    import re
+    symbol_match = re.search(r'([A-Z]{3}_[A-Z]{3}|[A-Z]{6})', os.path.basename(config.data_path))
+    symbol_name = symbol_match.group(1) if symbol_match else 'GBPUSD'
+    
     # 添加策略
     cerebro.addstrategy(
         TrendFilterStrategy,
@@ -77,6 +83,7 @@ def run_trend_filter_backtest(use_sample_data=False):
         analysis_bars=config.analysis_bars,
         pullback_wait_bars=config.pullback_wait_bars,
         risk_percent=config.risk_percent,
+        quote_usd_rate=get_quote_usd_rate(symbol_name),
         min_lot=config.min_lot,
         max_lot=config.max_lot,
         max_cash_ratio=config.max_cash_ratio,
@@ -87,10 +94,6 @@ def run_trend_filter_backtest(use_sample_data=False):
     cerebro.broker.set_cash(config.initial_cash)
     
     # ✅ Bug #11修复: 使用ForexCommissionInfo正确计算盈亏
-    # 从数据文件路径推断品种名称
-    import re
-    symbol_match = re.search(r'([A-Z]{3}_[A-Z]{3}|[A-Z]{6})', os.path.basename(config.data_path))
-    symbol_name = symbol_match.group(1) if symbol_match else 'GBPUSD'
     forex_comm = create_forex_commission(symbol=symbol_name, leverage=30.0)
     cerebro.broker.addcommissioninfo(forex_comm)
     
@@ -218,12 +221,52 @@ def run_trend_filter_backtest(use_sample_data=False):
 
 
 if __name__ == '__main__':
-    # 计时
+    import argparse
     import time
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='趋势过滤策略回测')
+    parser.add_argument('--symbol', type=str, default='GBPUSD',
+                       help='交易品种 (GBPUSD, USDJPY, XAUUSD, XAGUSD等)')
+    parser.add_argument('--risk', type=float, default=1.0,
+                       help='风险百分比 (默认: 1.0)')
+    parser.add_argument('--start-date', type=str, default=None,
+                       help='起始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, default=None,
+                       help='结束日期 (YYYY-MM-DD)')
+    args = parser.parse_args()
+    
+    # 根据symbol设置数据路径
+    symbol_map = {
+        'GBPUSD': 'GBP_USD_M5.csv',
+        'USDJPY': 'USD_JPY_M5.csv',
+        'EURUSD': 'EUR_USD_M5.csv',
+        'AUDUSD': 'AUD_USD_M5.csv',
+        'AUDJPY': 'AUD_JPY_M5.csv',
+        'XAUUSD': 'XAU_USD_M5.csv',
+        'XAGUSD': 'XAG_USD_M5.csv',
+    }
+    
+    # 转换symbol格式（移除下划线和斜杠）
+    symbol_clean = args.symbol.upper().replace('_', '').replace('/', '')
+    data_file = symbol_map.get(symbol_clean, f'{args.symbol}_M5.csv')
+    
+    # 计时
     start_time = time.time()
     
-    # 运行回测
-    run_trend_filter_backtest(use_sample_data=False)
+    # 修改配置
+    from config_trend_filter import get_default_config
+    config = get_default_config()
+    config.data_path = f'./data/{data_file}'
+    config.risk_percent = args.risk
+    
+    print(f"📊 测试品种: {symbol_clean}")
+    print(f"📁 数据文件: {config.data_path}")
+    print(f"💰 风险设置: {config.risk_percent}%")
+    print()
+    
+    # 运行回测（传递修改后的config）
+    run_trend_filter_backtest(use_sample_data=False, config=config)
     
     # 输出耗时
     elapsed_time = time.time() - start_time

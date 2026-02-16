@@ -9,7 +9,7 @@ from .analyzers import (
     StateTransitionAnalyzer,
     WinStreakAnalyzer
 )
-from .forex_commission import ForexCommissionInfo, create_forex_commission
+from .forex_commission import ForexCommissionInfo, create_forex_commission, get_quote_usd_rate
 
 __all__ = [
     'CSVDataLoader',
@@ -20,4 +20,5 @@ __all__ = [
     'WinStreakAnalyzer',
     'ForexCommissionInfo',
     'create_forex_commission',
+    'get_quote_usd_rate',
 ]

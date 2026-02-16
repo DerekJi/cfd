@@ -2,7 +2,6 @@
 Strategies package
 """
 
-from .range_breakout_v3 import RangeBreakoutStrategy
-from .range_detector import DonchianRangeDetector
+from .trend_filter_strategy_v1 import TrendFilterStrategy
 
-__all__ = ['RangeBreakoutStrategy', 'DonchianRangeDetector']
+__all__ = ['TrendFilterStrategy']

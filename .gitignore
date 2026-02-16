@@ -55,8 +55,14 @@ Thumbs.db
 # Project specific
 backtest/data/*.csv
 !backtest/data/.gitkeep
+backtest/data/data/
+backtest/backtest/
+backtest/results/
+backtest/output/
+backtest/reports/
 results/
 *.log
+download_log.txt
 
 # TA-Lib binaries
 ta_lib/

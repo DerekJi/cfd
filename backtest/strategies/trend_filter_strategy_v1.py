@@ -5,7 +5,7 @@
 """
 
 import backtrader as bt
-from strategies.range_detector import DonchianRangeDetector
+from indicators.range_detector import DonchianRangeDetector
 from indicators.atr_buffer import ATRBuffer
 from indicators.adx_indicator import ADX
 from indicators.trend_filter_fsm import TrendFilterStateMachine
@@ -48,6 +48,7 @@ class TrendFilterStrategy(bt.Strategy):
         ('total_account_size', 10000.0),  # 总账户规模（用于风险计算）
         ('risk_percent', 1.0),  # 每笔交易风险百分比（基于总账户）
         ('num_symbols', 1),  # 同时交易的品种数量（用于分配风险）
+        ('quote_usd_rate', 0.0),  # 报价货币→USD转换率 (0=自动用1/price, 用于交叉货币对)
         ('min_lot', 0.01),
         ('max_lot', 10.0),
         ('max_cash_ratio', 0.95),
@@ -190,8 +191,20 @@ class TrendFilterStrategy(bt.Strategy):
                 self.pending_entry_info = None
         
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+            status_msg = {
+                order.Canceled: "Canceled",
+                order.Margin: "Margin (insufficient funds)",
+                order.Rejected: "Rejected"
+            }.get(order.status, "Unknown")
+            
             if self.params.debug:
-                print(f"  ⚠️ 订单取消/拒绝")
+                print(f"  ⚠️ 订单{status_msg}")
+                print(f"     订单类型: {'Buy' if order.isbuy() else 'Sell'}")
+                print(f"     订单价格: {order.created.price if hasattr(order.created, 'price') else 'Market'}")
+                print(f"     订单数量: {order.created.size if hasattr(order.created, 'size') else 'N/A'}")
+                print(f"     当前资金: ${self.broker.getcash():.2f}")
+                print(f"     持仓价值: ${self.broker.getvalue() - self.broker.getcash():.2f}")
+            
             self.pending_entry_info = None  # 清除待确认信息
         
         self.order = None
@@ -297,7 +310,7 @@ class TrendFilterStrategy(bt.Strategy):
         
         if self.params.debug:
             lots = size / 100000
-            risk_dollars = size * (entry_price - stop_loss)
+            risk_dollars = size * (entry_price - stop_loss) / entry_price
             print(f"\n{'='*80}")
             print(f"🔺 【趋势做多】入场")
             print(f"{'='*80}")
@@ -341,7 +354,7 @@ class TrendFilterStrategy(bt.Strategy):
         
         if self.params.debug:
             lots = size / 100000
-            risk_dollars = size * (stop_loss - entry_price)
+            risk_dollars = abs(size) * (stop_loss - entry_price) / entry_price
             print(f"\n{'='*80}")
             print(f"🔻 【趋势做空】入场")
             print(f"{'='*80}")
@@ -417,25 +430,73 @@ class TrendFilterStrategy(bt.Strategy):
         if stop_distance <= 0:
             return 0
         
+        # ✅ 修复11: 止损距离最小阈值 (防止极小止损导致仓位爆炸)
+        # 当止损距离极小时(如0.01 yen vs 正常0.5-2.0 yen)，仓位会被放大到极端值
+        # 即使滑点保护3x也无法覆盖，因为实际出场可能偏离10x以上
+        # 设置最小止损距离 = ATR的10%，低于此阈值拒绝交易
+        MIN_STOP_ATR_RATIO = 0.15  # 止损距离至少为ATR的15%
+        current_atr = self.atr_buffer.atr[0]
+        min_stop_distance = current_atr * MIN_STOP_ATR_RATIO
+        
+        if stop_distance < min_stop_distance:
+            if self.params.debug:
+                print(f"\n⚠️  跳过交易 (止损距离过小):")
+                print(f"   止损距离: {stop_distance:.5f} ({stop_distance/entry_price*100:.4f}%)")
+                print(f"   ATR: {current_atr:.5f}")
+                print(f"   最小要求: {min_stop_distance:.5f} (ATR×{MIN_STOP_ATR_RATIO})")
+                print(f"   → 拒绝交易，防止仓位爆炸\n")
+            return 0
+        
         # ✅ 修复3: 仓位计算公式
-        # backtrader对不同forex pair的盈亏计算方式：
-        # - 对基础货币=账户货币(如GBPUSD)：盈亏 = size × (price_change / entry_price)
-        # - 对报价货币≠账户货币(如USDJPY)：盈亏 = size × price_change / exchange_rate
-        # 
+        # Forex盈亏公式 (由ForexCommissionInfo实现):
+        #   direct  (GBPUSD):  PnL = size × Δprice × 1.0
+        #   indirect(USDJPY):  PnL = size × Δprice × (1/price)
+        #   cross   (AUDJPY):  PnL = size × Δprice × quote_usd_rate
+        #
+        # 统一公式: PnL = size × Δprice × pnl_factor
+        # 因此:     size = risk_amount / (stop_distance × pnl_factor × SLIPPAGE)
+        #
         # ✅ 修复6: 添加滑点保护系数
-        # 在高波动时段（如数据发布），价格可能跳空导致止损单以收盘价成交
-        # 实际滑点可能达到2-3倍止损距离，需要保守计算仓位
         SLIPPAGE_PROTECTION = 3.0  # 假设最坏情况3倍滑点
         
-        # ✅ 修复9: USDJPY等报价货币≠账户货币的仓位计算
-        # 对于USDJPY: 损失(USD) = position_size × stop_distance(JPY) / exchange_rate
-        # 因此: position_size = risk_amount × exchange_rate / stop_distance
-        size = risk_amount * entry_price / (stop_distance * SLIPPAGE_PROTECTION)
+        # 确定PnL因子
+        if self.params.quote_usd_rate > 0:
+            # 交叉货币对: 使用显式指定的 quote_usd_rate
+            pnl_factor = self.params.quote_usd_rate
+        else:
+            # direct/indirect: 使用 1/entry_price (对indirect精确, 对direct偏保守)
+            pnl_factor = 1.0 / entry_price
         
-        # 但对于大汇率的pair (如USD/JPY ~150)，需要调整
-        # 因为实际持仓以"基础货币"为单位，需要转换
-        # 暂时使用简化版本，待优化
-        # size = (risk_amount * entry_price) / stop_distance  # 原公式，对USDJPY过大
+        size = risk_amount / (stop_distance * pnl_factor * SLIPPAGE_PROTECTION)
+        
+        # ✅ 修复12: 基于单笔最大亏损的硬顶仓位限制
+        # 问题: 策略使用EMA50趋势跟踪退场，实际退场距离可能远超理论止损距离
+        #        当止损距离极小时，仓位极大，即使3x滑点保护也无法覆盖
+        # 方案: 设定硬顶 = 单笔最大允许亏损 / (ATR × 安全系数 × pnl_factor)
+        #        确保即使价格反向移动 2.5×ATR，亏损仍不超过账户的1%
+        MAX_SINGLE_LOSS_PCT = 0.01  # Blue Guardian: 单笔最大亏损 = 账户1%
+        ATR_WORST_CASE = 2.5       # 预估最坏退场距离 = 2.5倍ATR (含佣金缓冲)
+        max_single_loss = self.params.total_account_size * MAX_SINGLE_LOSS_PCT
+        max_safe_size = max_single_loss / (current_atr * ATR_WORST_CASE * pnl_factor)
+        
+        if size > max_safe_size:
+            if self.params.debug:
+                print(f"\n⚠️  修复12-单笔亏损限制，缩小仓位:")
+                print(f"   原仓位: {size:.0f} -> 新仓位: {max_safe_size:.0f}")
+                print(f"   ATR: {current_atr:.5f}")
+                print(f"   最大允许亏损: ${max_single_loss:.2f}")
+                print(f"   最坏退场距离: {current_atr * ATR_WORST_CASE:.5f} ({ATR_WORST_CASE}x ATR)\n")
+            size = max_safe_size
+        
+        if self.params.debug:
+            print(f"\n📐 仓位计算:")
+            print(f"   风险金额: ${risk_amount:.2f}")
+            print(f"   入场价: {entry_price:.5f}")
+            print(f"   止损价: {stop_loss:.5f}")
+            print(f"   止损距离: {stop_distance:.5f} ({100*stop_distance/entry_price:.3f}%)")
+            print(f"   滑点保护: {SLIPPAGE_PROTECTION}x")
+            print(f"   ATR仓位上限: {max_safe_size:.0f} units")
+            print(f"   最终仓位: {size:.2f} units ({size/100000:.4f} lots)\n")
         
         # ✅ 修复7: 检查最小手数限制是否会导致过度风险
         # 当理论仓位 < 最小手数时，最终仓位会被强制Round up
@@ -444,8 +505,7 @@ class TrendFilterStrategy(bt.Strategy):
         
         if size < min_size:
             # 计算最小仓位下的理论最大亏损（考虑3倍滑点）
-            # ✅ 修复9: USDJPY需要除以汇率转换为USD
-            max_loss_with_min_size = min_size * stop_distance * SLIPPAGE_PROTECTION / entry_price
+            max_loss_with_min_size = min_size * stop_distance * pnl_factor * SLIPPAGE_PROTECTION
             
             # ✅ 加严门槛：如果最小仓位的风险 > 1.5倍理论风险，则跳过
             # Blue Guardian场景下，$20理论 × 1.5 = $30，仍低于$50单笔限制
@@ -458,10 +518,31 @@ class TrendFilterStrategy(bt.Strategy):
                     print(f"   → 拒绝交易，保护资金\n")
                 return 0  # 不开仓
         
-        # ✅ 修复10: Forex有杠杆，不应该用max_cash_ratio限制
-        # 原逻辑适用于股票（需要全额资金），但forex只需要保证金
-        # 风险已经通过止损距离控制，不需要额外的资金限制
-        # 如果需要保证金检查，应该用 size / leverage 而不是 size * price
+        # ✅ 修复10: 保证金上限检查
+        # 确保仓位的保证金不超过可用资金的80%，防止保证金不足导致不可控行为
+        MAX_MARGIN_RATIO = 0.80  # 保证金最多用80%的可用资金
+        # 间接报价(USDJPY): margin = size / leverage
+        # 直接报价(GBPUSD): margin = size * price / leverage
+        # 交叉货币对(AUDJPY): margin = size * price * quote_usd_rate / leverage
+        LEVERAGE = 30.0
+        if self.params.quote_usd_rate > 0:
+            margin_needed = size * entry_price * self.params.quote_usd_rate / LEVERAGE
+        elif pnl_factor == 1.0 / entry_price:
+            # indirect: getvaluesize = abs(size), margin = size / leverage
+            margin_needed = size / LEVERAGE
+        else:
+            margin_needed = size * entry_price / LEVERAGE
+        
+        max_margin = cash_available * MAX_MARGIN_RATIO
+        if margin_needed > max_margin:
+            # 缩小仓位到保证金允许范围
+            scale = max_margin / margin_needed
+            old_size = size
+            size = size * scale
+            if self.params.debug:
+                print(f"\n⚠️  保证金限制，缩小仓位:")
+                print(f"   原仓位: {old_size:.0f} -> 新仓位: {size:.0f}")
+                print(f"   保证金: ${margin_needed:.2f} -> ${max_margin:.2f} (可用资金{MAX_MARGIN_RATIO*100:.0f}%)\n")
         
         # 转换为手数并限制范围
         lots = size / 100000
