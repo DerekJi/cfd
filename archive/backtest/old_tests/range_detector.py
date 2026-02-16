@@ -22,9 +22,9 @@ class DonchianRangeDetector(bt.Indicator):
     )
     
     def __init__(self):
-        # Donchian通道
-        self.highest = bt.indicators.Highest(self.data.high, period=self.params.lookback)
-        self.lowest = bt.indicators.Lowest(self.data.low, period=self.params.lookback)
+        # Donchian通道（使用过去N根K线，不包括当前K线）
+        self.highest = bt.indicators.Highest(self.data.high(-1), period=self.params.lookback)
+        self.lowest = bt.indicators.Lowest(self.data.low(-1), period=self.params.lookback)
         
         # UP/DOWN线
         self.lines.up_line = self.highest

@@ -94,14 +94,24 @@ def run_backtest(use_sample_data=True):
         confirm_bars=STRATEGY_CONFIG['confirm_bars'],
         max_wait_bars=STRATEGY_CONFIG['max_wait_bars'],
         trailing_stop=STRATEGY_CONFIG['trailing_stop_enabled'],
-        position_size=RISK_CONFIG['position_size'],
+        risk_percent=RISK_CONFIG['risk_percent'],
+        min_lots=RISK_CONFIG['min_lots'],
+        max_lots=RISK_CONFIG['max_lots'],
         spread_pips=RISK_CONFIG['spread_pips'],
         debug=True
     )
     
-    # 4. 设置初始资金和手续费
+    # 4. 设置初始资金和外汇交易佣金
     cerebro.broker.set_cash(BACKTEST_CONFIG['cerebro_cash'])
-    cerebro.broker.setcommission(commission=BACKTEST_CONFIG['cerebro_commission'])
+    
+    # 设置外汇交易佣金模式
+    cerebro.broker.setcommission(
+        commission=BACKTEST_CONFIG['cerebro_commission'],
+        margin=None,  # 不使用保证金
+        mult=1.0,  # 乘数为1
+        commtype=bt.CommInfoBase.COMM_FIXED,  # 固定佣金
+        stocklike=True  # 按股票模式（直接用资金购买）
+    )
     
     # 5. 添加分析器
     print("  └─ 添加分析器...")
@@ -237,8 +247,8 @@ def save_results(strategy, detailed_trades):
 
 if __name__ == '__main__':
     # 运行回测
-    # 使用示例数据
-    run_backtest(use_sample_data=True)
+    # 使用真实数据
+    run_backtest(use_sample_data=False)
     
-    # 如果有真实数据，取消注释下面这行
+    # 如果只想用示例数据测试，取消注释下面这行
     # run_backtest(use_sample_data=False)

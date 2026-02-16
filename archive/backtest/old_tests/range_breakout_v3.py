@@ -37,7 +37,9 @@ class RangeBreakoutStrategy(bt.Strategy):
         ('trailing_stop', True),  # 是否启用移动止损
         
         # 风险管理参数
-        ('position_size', 100000),  # 仓位大小（1标准手）
+        ('risk_percent', 1.0),  # 每笔交易风险百分比
+        ('min_lots', 0.01),  # 最小手数（1000单位）
+        ('max_lots', 10.0),  # 最大手数（1,000,000单位）
         ('spread_pips', 1.0),  # 点差
         
         # 调试参数
@@ -142,18 +144,51 @@ class RangeBreakoutStrategy(bt.Strategy):
             # 已有持仓，不重复开仓
             return
         
+        # 简化仓位计算：使用可用资金的一定比例
+        cash_available = self.broker.get_cash()
+        entry_price = action['entry_price']
+        
+        # 计算基于风险的仓位
+        account_value = self.broker.get_value()
+        risk_amount = account_value * (self.params.risk_percent / 100)
+        stop_loss = action['stop_loss']
+        risk_per_unit = entry_price - stop_loss
+        
+        if risk_per_unit > 0:
+            size = risk_amount / risk_per_unit
+        else:
+            size = cash_available * 0.01 / entry_price  # 默认使用1%资金
+        
+        # 限制最大使用资金（避免资金不足）
+        max_value = cash_available * 0.95  # 最多使用95%可用资金
+        max_size_by_cash = max_value / entry_price
+        size = min(size, max_size_by_cash)
+        
+        # 限制在最小/最大手数范围内
+        min_size = self.params.min_lots * 100000  # 0.01手 = 1000单位
+        max_size = self.params.max_lots * 100000  # 10手 = 1,000,000单位
+        size = max(min_size, min(size, max_size))
+        
+        # 向下舍入到1000的整数倍（外汇最小单位）
+        size = int(size / 1000) * 1000
+        
+        # 确保至少是最小单位
+        if size < min_size:
+            size = min_size
+        
         # 开多单
-        size = self.params.position_size / self.data.close[0]
         self.order = self.buy(size=size)
         
         if self.params.debug:
+            lots = size / 100000  # 转换为手数
+            risk_dollars = size * (entry_price - stop_loss)
             print(f"\n{'='*60}")
             print(f"🔺 做多入场")
             print(f"{'='*60}")
-            print(f"入场价格: {action['entry_price']:.5f}")
-            print(f"止损价格: {action['stop_loss']:.5f}")
-            print(f"仓位大小: {size:.2f}")
-            print(f"风险: {(action['entry_price'] - action['stop_loss']) / action['entry_price'] * 100:.2f}%")
+            print(f"入场价格: {entry_price:.5f}")
+            print(f"止损价格: {stop_loss:.5f}")
+            print(f"仓位大小: {size:.0f} 单位 ({lots:.2f} 手)")
+            print(f"风险金额: ${risk_dollars:.2f} ({self.params.risk_percent:.1f}%)")
             print(f"{'='*60}\n")
     
     def _execute_exit(self, action):
@@ -165,14 +200,20 @@ class RangeBreakoutStrategy(bt.Strategy):
         self.order = self.close()
         
         if self.params.debug:
-            entry_price = self.state_machine.state_data.entry_price
+            entry_price = action.get('entry_price')  # 从action获取
             exit_price = action['exit_price']
-            pnl = (exit_price - entry_price) / entry_price * 100
+            if entry_price:
+                pnl = (exit_price - entry_price) / entry_price * 100
+            else:
+                pnl = 0.0
             
             print(f"\n{'='*60}")
             print(f"🔻 平仓出场")
             print(f"{'='*60}")
-            print(f"入场价格: {entry_price:.5f}")
+            if entry_price:
+                print(f"入场价格: {entry_price:.5f}")
+            else:
+                print(f"入场价格: N/A")
             print(f"出场价格: {exit_price:.5f}")
             print(f"盈亏: {pnl:+.2f}%")
             print(f"{'='*60}\n")

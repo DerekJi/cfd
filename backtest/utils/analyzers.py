@@ -26,6 +26,14 @@ class DetailedTradeAnalyzer(bt.Analyzer):
             exit_bar = trade.barclose
             holding_period = exit_bar - entry_bar
             
+            # 安全计算exit_price和pnl_percent
+            if trade.size != 0:
+                exit_price = trade.price + trade.pnl / trade.size
+                pnl_percent = (trade.pnl / (trade.price * trade.size)) * 100
+            else:
+                exit_price = trade.price
+                pnl_percent = 0.0
+            
             # 记录交易详情
             trade_info = {
                 'entry_bar': entry_bar,
@@ -34,12 +42,12 @@ class DetailedTradeAnalyzer(bt.Analyzer):
                 'exit_date': bt.num2date(trade.dtclose),
                 'holding_bars': holding_period,
                 'entry_price': trade.price,
-                'exit_price': trade.price + trade.pnl / trade.size,
+                'exit_price': exit_price,
                 'size': trade.size,
                 'pnl': trade.pnl,
                 'pnl_comm': trade.pnlcomm,
                 'commission': trade.commission,
-                'pnl_percent': (trade.pnl / (trade.price * trade.size)) * 100,
+                'pnl_percent': pnl_percent,
             }
             
             self.trades.append(trade_info)

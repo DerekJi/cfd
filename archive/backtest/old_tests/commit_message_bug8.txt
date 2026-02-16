@@ -1,0 +1,56 @@
+feat: 新增市场开盘时段交易禁止功能
+
+问题：
+- 市场开盘时（悉尼07:00、东京09:00）价格易跳空
+- USDJPY案例：00:00开盘时K线跳空0.64 JPY，导致$614亏损
+- 小仓位+紧密止损在开盘跳空下风险失控
+
+解决方案：
+在悉尼、东京开盘前后15分钟禁止开新仓
+
+实施内容：
+1. 新增 _is_market_open_session(dt) 函数
+   - 检测当前时间是否在禁止时段
+   - 东京开盘: 23:45-00:15 UTC
+   - 悉尼开盘: 20:45-21:15 UTC
+
+2. 在入场函数中添加时段检查
+   - _execute_entry_long() 开头检查
+   - _execute_entry_short() 开头检查
+   - 禁止时段直接return，放弃开仓
+
+3. 添加统计和输出
+   - blocked_by_session 计数器
+   - stop() 函数输出阻止笔数
+   - debug模式显示详细原因
+
+测试结果（USDJPY 2025-02-02至2026-02-11）：
+- 阻止交易: 46笔 (7.1%)
+- 实际交易: 599笔
+- 有效避免高波动时段开仓风险
+
+特点：
+- ✅ 仅限制开仓，不影响已有持仓
+- ✅ 基于UTC时间，避免时区混乱
+- ✅ 可调整时间窗口
+- ✅ 详细统计和debug输出
+
+修改文件：
+- backtest/strategies/trend_filter_strategy_v1.py
+  L109-113: 添加blocked_by_session统计
+  L125-152: _is_market_open_session()函数
+  L283-297: entry_long检查
+  L330-344: entry_short检查
+  L478-482: stop()统计输出
+
+测试文件：
+- backtest/test_market_session_filter.py (逻辑验证)
+- backtest/test_session_filter_effect.py (实际效果)
+
+文档：
+- docs/市场开盘时段交易过滤功能说明.md
+
+相关：
+- 针对USDJPY $614跳空案例的补充保护
+- 与Bug #7（最小手数风险验证）配合使用
+- Blue Guardian风控进一步强化

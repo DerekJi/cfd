@@ -45,12 +45,18 @@ class StateData:
     stop_loss: Optional[float] = None
     initial_stop_loss: Optional[float] = None
     
-    # UP/DOWN线记录
+    # UP/DOWN线记录（动态更新）
     up_line: Optional[float] = None
     down_line: Optional[float] = None
     mid_line: Optional[float] = None
     buffer: Optional[float] = None
     atr: Optional[float] = None
+    
+    # UP/DOWN线快照（锁定值，用于交易逻辑）
+    locked_up_line: Optional[float] = None
+    locked_down_line: Optional[float] = None
+    locked_mid_line: Optional[float] = None
+    locked_buffer: Optional[float] = None
     
     def reset_to_idle(self):
         """重置到IDLE状态"""
@@ -154,16 +160,22 @@ class StateMachine:
         """处理IDLE状态"""
         # 检查是否突破UP线
         if close > self.state_data.up_line:
-            # 转入TOUCHING状态
+            # 转入TOUCHING状态，锁定UP/DOWN线值
             self.state_data.state = TradingState.TOUCHING
             self.state_data.touch_start_time = current_time
             self.state_data.touch_start_bar = current_bar
             self.state_data.peak_price = high
             
+            # 锁定当前的UP/DOWN线值
+            self.state_data.locked_up_line = self.state_data.up_line
+            self.state_data.locked_down_line = self.state_data.down_line
+            self.state_data.locked_mid_line = self.state_data.mid_line
+            self.state_data.locked_buffer = self.state_data.buffer
+            
             return {
                 'action': None,
                 'state_changed': True,
-                'message': f'突破UP线 {self.state_data.up_line:.5f}，进入TOUCHING状态'
+                'message': f'突破UP线 {self.state_data.up_line:.5f}，进入TOUCHING状态（锁定）'
             }
         
         return {'action': None}
@@ -174,13 +186,13 @@ class StateMachine:
         if high > self.state_data.peak_price:
             self.state_data.peak_price = high
         
-        # 检查是否回落到UP线以下（失败）
-        if close <= self.state_data.up_line:
+        # 检查是否回落到锁定的UP线以下（失败）
+        if close <= self.state_data.locked_up_line:
             self.state_data.reset_to_idle()
             return {
                 'action': None,
                 'state_changed': True,
-                'message': '回落到UP线以下，回到IDLE状态'
+                'message': '回落到锁定UP线以下，回到IDLE状态'
             }
         
         # 检查是否满足确认条件
@@ -205,10 +217,10 @@ class StateMachine:
         if high > self.state_data.peak_price:
             self.state_data.peak_price = high
         
-        # 检查是否回落到 UP - Buffer
-        retracement_threshold = self.state_data.up_line - self.state_data.buffer
+        # 新策略：从峰值回落0.5×ATR即可（不要求回到UP线）
+        pullback_threshold = self.state_data.peak_price - 0.5 * self.state_data.atr
         
-        if close <= retracement_threshold:
+        if close <= pullback_threshold:
             # 转入RETRACED状态
             self.state_data.state = TradingState.RETRACED
             self.state_data.dip_price = low
@@ -230,8 +242,8 @@ class StateMachine:
         if low < self.state_data.dip_price:
             self.state_data.dip_price = low
         
-        # 失效条件1：跌破中轴
-        if self.state_data.dip_price < self.state_data.mid_line:
+        # 失效条件1：跌破锁定的中轴
+        if self.state_data.dip_price < self.state_data.locked_mid_line:
             self.state_data.reset_to_idle()
             return {
                 'action': None,
@@ -239,8 +251,8 @@ class StateMachine:
                 'message': '跌破中轴，回到IDLE状态'
             }
         
-        # 失效条件2：假突破（跌破UP线）
-        if close < self.state_data.up_line:
+        # 失效条件2：假突破（跌破锁定的UP线）
+        if close < self.state_data.locked_up_line:
             self.state_data.reset_to_idle()
             return {
                 'action': None,
@@ -285,12 +297,14 @@ class StateMachine:
         # 检查止损出场
         if close < self.state_data.stop_loss:
             exit_price = close
+            entry_price = self.state_data.entry_price  # 保存entry_price
             self.state_data.reset_to_idle()
             
             return {
                 'action': 'exit',
                 'state_changed': True,
                 'exit_price': exit_price,
+                'entry_price': entry_price,  # 传递给exit handler
                 'message': f'触发止损，出场价格: {exit_price:.5f}'
             }
         
