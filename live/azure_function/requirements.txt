@@ -1,0 +1,8 @@
+# Azure Functions Python dependencies
+# Pin versions for reproducibility
+
+azure-functions>=1.17.0
+azure-data-tables>=12.4.0
+httpx>=0.27.0
+numpy>=1.26.0
+pandas>=2.1.0
