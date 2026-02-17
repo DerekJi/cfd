@@ -105,24 +105,42 @@ class TrendFilterStateMachine:
     # 持久化支持  (新增)
     # ----------------------------------------------------------------
 
+    @staticmethod
+    def _to_python(val):
+        """将 numpy 标量转换为原生 Python 类型，确保 JSON 可序列化"""
+        if val is None:
+            return None
+        import math
+        # numpy float / int → Python float / int
+        tp = type(val).__name__
+        if 'float' in tp:
+            v = float(val)
+            return None if math.isnan(v) else v
+        if 'int' in tp:
+            return int(val)
+        return val
+
     def get_state_snapshot(self) -> Dict[str, Any]:
         """
         获取完整状态快照，可直接序列化为 JSON / Azure Table 存储
 
+        numpy 标量会自动转换为原生 Python 类型，NaN → None。
+
         Returns:
             dict: 包含所有可恢复状态变量
         """
+        c = self._to_python
         return {
             'state': self.state.name,                    # str: 'IDLE', 'POSITION_LONG' 等
             'breakout_direction': self.breakout_direction,
-            'locked_up_line': self.locked_up_line,
-            'locked_down_line': self.locked_down_line,
-            'locked_ema50': self.locked_ema50,
-            'locked_ema200': self.locked_ema200,
+            'locked_up_line': c(self.locked_up_line),
+            'locked_down_line': c(self.locked_down_line),
+            'locked_ema50': c(self.locked_ema50),
+            'locked_ema200': c(self.locked_ema200),
             'analysis_counter': self.analysis_counter,
             'wait_counter': self.wait_counter,
-            'entry_price': self.entry_price,
-            'stop_loss': self.stop_loss,
+            'entry_price': c(self.entry_price),
+            'stop_loss': c(self.stop_loss),
         }
 
     def restore(self, snapshot: Dict[str, Any]) -> None:
