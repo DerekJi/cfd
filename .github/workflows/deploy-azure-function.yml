@@ -93,76 +93,105 @@ jobs:
       # 改用 curl 直接调用 Kudu zipdeploy API，更可靠且能看到完整错误。
       # Oryx 远程构建由 Portal 环境变量 SCM_DO_BUILD_DURING_DEPLOYMENT=true 控制。
       #
+      # Parse publish profile & deploy via python3 (avoids bash XML/special char issues)
       - name: Deploy to Azure Functions
         env:
           PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
         run: |
-          set -e
+          python3 - <<'PYEOF'
+          import xml.etree.ElementTree as ET
+          import subprocess, os, sys, time, json
 
-          # Parse SCM credentials from publish profile XML
-          USERNAME=$(echo "$PUBLISH_PROFILE" | grep -oP 'userName="\K[^"]+' | head -1)
-          PASSWORD=$(echo "$PUBLISH_PROFILE" | grep -oP 'userPWD="\K[^"]+' | head -1)
-          SCM_URL="https://${AZURE_FUNCTIONAPP_NAME}.scm.azurewebsites.net"
+          # ── 1. Parse publish profile XML ──
+          pp = os.environ["PUBLISH_PROFILE"]
+          root = ET.fromstring(pp)
+          profile = root.find(".//publishProfile[@publishMethod='MSDeploy']")
+          if profile is None:
+              profile = root.findall(".//publishProfile")[0]
 
-          if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-            echo "::error::Failed to parse credentials from publish profile"
-            exit 1
-          fi
-          echo "SCM user: $USERNAME"
 
-          # Health check — verify SCM site is reachable
-          echo "=== SCM health check ==="
-          HC_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "$SCM_URL/api/settings" \
-            -u "$USERNAME:$PASSWORD" \
-            --max-time 30)
-          echo "SCM health: HTTP $HC_CODE"
-          if [ "$HC_CODE" -ge 400 ]; then
-            echo "::error::SCM site not reachable (HTTP $HC_CODE). Check publish profile."
-            exit 1
-          fi
+          user = profile.attrib["userName"]
+          pwd  = profile.attrib["userPWD"]
+          scm  = f"https://{os.environ['AZURE_FUNCTIONAPP_NAME']}.scm.azurewebsites.net"
 
-          # Deploy via zipdeploy (async for remote build)
-          echo "=== Deploying via zipdeploy ==="
-          HTTP_CODE=$(curl -s -o deploy_response.txt -w "%{http_code}" \
-            -X POST "$SCM_URL/api/zipdeploy?isAsync=true" \
-            -u "$USERNAME:$PASSWORD" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @deploy.zip \
-            --max-time 300)
+          print(f"SCM user: {user}")
+          print(f"SCM URL:  {scm}")
+          print(f"Password length: {len(pwd)}")
 
-          echo "Deploy response: HTTP $HTTP_CODE"
+          # ── 2. Health check ──
+          print("\n=== SCM health check ===")
+          r = subprocess.run(
+              ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+               f"{scm}/api/settings", "-u", f"{user}:{pwd}", "--max-time", "30"],
+              capture_output=True, text=True
+          )
+          hc = r.stdout.strip()
+          print(f"SCM health: HTTP {hc}")
+          if r.returncode != 0:
+              print(f"curl error: exit {r.returncode}, stderr: {r.stderr}")
+              sys.exit(1)
+          if int(hc) >= 400:
+              print(f"::error::SCM not reachable (HTTP {hc})")
+              sys.exit(1)
 
-          if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "::error::Deployment failed (HTTP $HTTP_CODE)"
-            echo "Response body:"
-            cat deploy_response.txt
-            exit 1
-          fi
+          # ── 3. ZIP deploy (async for Oryx remote build) ──
+          print("\n=== Deploying via zipdeploy ===")
+          r = subprocess.run(
+              ["curl", "-s", "-o", "deploy_resp.txt", "-w", "%{http_code}",
+               "-D", "deploy_headers.txt",
+               "-X", "POST", f"{scm}/api/zipdeploy?isAsync=true",
+               "-u", f"{user}:{pwd}",
+               "-H", "Content-Type: application/octet-stream",
+               "--data-binary", "@deploy.zip",
+               "--max-time", "300"],
+              capture_output=True, text=True
+          )
+          code = r.stdout.strip()
+          print(f"Deploy response: HTTP {code}")
+          if r.returncode != 0:
+              print(f"curl error: exit {r.returncode}, stderr: {r.stderr}")
+              sys.exit(1)
 
-          # For async deploy, poll status
-          if [ "$HTTP_CODE" = "202" ]; then
-            POLL_URL=$(grep -i "^location:" deploy_response.txt | tr -d '\r' | awk '{print $2}' || true)
-            if [ -z "$POLL_URL" ]; then
-              POLL_URL="$SCM_URL/api/deployments/latest"
-            fi
-            echo "Async deploy started. Polling status..."
-            for i in $(seq 1 30); do
-              sleep 10
-              STATUS=$(curl -s "$POLL_URL" -u "$USERNAME:$PASSWORD")
-              DEPLOY_STATUS=$(echo "$STATUS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',d.get('provisioningState','unknown')))" 2>/dev/null || echo "unknown")
-              echo "  [$i/30] Status: $DEPLOY_STATUS"
-              if [ "$DEPLOY_STATUS" = "4" ] || [ "$DEPLOY_STATUS" = "Succeeded" ]; then
-                echo "Deployment succeeded!"
-                exit 0
-              elif [ "$DEPLOY_STATUS" = "3" ] || [ "$DEPLOY_STATUS" = "Failed" ]; then
-                echo "::error::Remote build failed"
-                echo "$STATUS" | python3 -m json.tool 2>/dev/null || echo "$STATUS"
-                exit 1
-              fi
-            done
-            echo "::warning::Deployment still in progress after 5 minutes (may succeed later)"
-          else
-            echo "Deployment completed (HTTP $HTTP_CODE)"
-          fi
+          if int(code) >= 400:
+              print("::error::Deployment failed")
+              with open("deploy_resp.txt") as f:
+                  print(f.read())
+              sys.exit(1)
+
+          # ── 4. Poll async status ──
+          if code == "202":
+              # Try to get Location header
+              poll_url = f"{scm}/api/deployments/latest"
+              try:
+                  with open("deploy_headers.txt") as f:
+                      for line in f:
+                          if line.lower().startswith("location:"):
+                              poll_url = line.split(":", 1)[1].strip()
+                              break
+              except: pass
+
+              print(f"Async deploy started. Polling: {poll_url}")
+              for i in range(1, 31):
+                  time.sleep(10)
+                  r2 = subprocess.run(
+                      ["curl", "-s", poll_url, "-u", f"{user}:{pwd}"],
+                      capture_output=True, text=True
+                  )
+                  try:
+                      d = json.loads(r2.stdout)
+                      st = d.get("status", "unknown")
+                  except:
+                      st = "unknown"
+                  print(f"  [{i}/30] Status: {st}")
+                  if st == 4:
+                      print("Deployment succeeded!")
+                      sys.exit(0)
+                  elif st == 3:
+                      print("::error::Remote build failed")
+                      print(json.dumps(d, indent=2))
+                      sys.exit(1)
+              print("::warning::Deploy still in progress after 5 min (may succeed later)")
+          else:
+              print(f"Deployment completed (HTTP {code})")
+          PYEOF
 
