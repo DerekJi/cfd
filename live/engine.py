@@ -108,6 +108,9 @@ class LiveEngine:
         if self.risk_limits:
             self._restore_risk_limits()
 
+        # 【核心修复】同步持仓状态：清理已平仓的记录和FSM状态
+        self._sync_positions()
+
         for sym_config in self.config.symbols:
             symbol = sym_config.oanda_name
             try:
@@ -158,10 +161,8 @@ class LiveEngine:
         if saved_state:
             fsm.restore(saved_state)
 
-        # 5. 硬止损检查 (实盘: 服务端止损已挂，这里做二次确认)
-        hard_stop_action = fsm.check_hard_stop(bar_data)
-        if hard_stop_action:
-            return self._handle_exit(sym_config, fsm, hard_stop_action, bar_data)
+        # 5. 【已移除硬止损检查】实盘完全依赖服务端止损，不需要代码再次平仓
+        #    平台自动平仓后，_sync_positions() 会自动清理状态
 
         # 6. FSM 主逻辑
         action = fsm.update(bar_data)
@@ -336,7 +337,11 @@ class LiveEngine:
         pos = self.storage.load_position(profile, symbol)
         if not pos:
             logger.warning(f"{symbol}: 收到平仓信号但无持仓记录")
-            self._save_fsm_state(symbol, fsm)
+            # FSM状态需要重置为IDLE
+            if fsm.state.name.startswith('POSITION'):
+                fsm._reset()
+                self._save_fsm_state(symbol, fsm)
+                logger.info(f"{symbol}: FSM状态已重置为IDLE")
             return {'action': 'no_position'}
 
         trade_id = pos.get('trade_id')
@@ -345,16 +350,38 @@ class LiveEngine:
         units = pos.get('units', 0)
         side = pos.get('side', 'long')
 
-        # 执行平仓
-        if self.config.dry_run:
-            logger.info(f"[DRY_RUN] {symbol}: 平仓 trade_id={trade_id}")
-            close_result = OrderResult(success=True, order_id='dry_run', fill_price=exit_price)
-        else:
-            if trade_id:
-                close_result = self.executor.close_position(trade_id)
-            else:
+        # 【核心修复】先验证持仓是否真实存在（防止重复平仓已被止损/止盈的仓位）
+        if not self.config.dry_run:
+            if not trade_id:
                 logger.error(f"{symbol}: 无 trade_id，跳过平仓")
                 return {'action': 'error', 'error': 'no_trade_id'}
+            
+            # 检查持仓是否仍然存在
+            actual_positions = self.executor.get_positions()
+            position_exists = any(p.position_id == trade_id for p in actual_positions)
+            
+            if not position_exists:
+                logger.warning(
+                    f"{symbol}: 持仓 {trade_id} 已不存在（可能已被止损/止盈自动平仓），"
+                    "仅清理状态，不执行平仓"
+                )
+                # 记录为自动平仓，使用当前价作为退出价
+                exit_price = bar_data['close']
+                close_result = OrderResult(
+                    success=True,
+                    order_id='auto_closed',
+                    trade_id=trade_id,
+                    fill_price=exit_price,
+                    units=units,
+                )
+                action['reason'] = f"{action.get('reason', 'unknown')}_auto_closed"
+            else:
+                # 持仓存在，执行平仓
+                close_result = self.executor.close_position(trade_id)
+        else:
+            # DRY_RUN 模式
+            logger.info(f"[DRY_RUN] {symbol}: 平仓 trade_id={trade_id}")
+            close_result = OrderResult(success=True, order_id='dry_run', fill_price=exit_price)
 
         if not close_result.success:
             logger.error(f"{symbol}: 平仓失败 — {close_result.error}")
@@ -465,6 +492,81 @@ class LiveEngine:
     # ================================================================
     # 辅助方法
     # ================================================================
+
+    def _sync_positions(self) -> None:
+        """
+        同步持仓状态：对比实盘持仓与Storage记录，清理已平仓的记录和FSM状态
+        
+        解决问题：
+        - 平台自动止损/止盈后，Storage和FSM仍保留持仓状态
+        - FSM状态不同步导致无法开新仓或重复平仓
+        
+        逻辑：
+        1. 获取实盘所有持仓
+        2. 对比每个品种的Storage记录
+        3. 如果Storage有记录但实盘无持仓 → 已被平台自动平仓
+        4. 清理Storage记录 + 重置FSM为IDLE
+        """
+        if self.config.dry_run:
+            # DRY_RUN模式不做同步（没有实盘持仓）
+            return
+        
+        profile = self.config.profile_name
+        
+        try:
+            # 获取实盘所有持仓
+            actual_positions = self.executor.get_positions()
+            actual_position_map = {p.symbol: p for p in actual_positions}
+            
+            logger.info(f"持仓同步开始: 实盘持仓 {len(actual_positions)} 个")
+            
+            # 检查每个配置品种
+            for sym_config in self.config.symbols:
+                symbol = sym_config.oanda_name
+                fsm = self.fsm_map[symbol]
+                
+                # 加载Storage中的持仓记录
+                saved_pos = self.storage.load_position(profile, symbol)
+                
+                # 实盘是否有该品种的持仓
+                has_actual_position = symbol in actual_position_map
+                
+                if saved_pos and not has_actual_position:
+                    # Storage有记录但实盘无持仓 → 已被自动平仓
+                    trade_id = saved_pos.get('trade_id', 'N/A')
+                    logger.warning(
+                        f"{symbol}: 检测到持仓 {trade_id} 已被平台自动平仓（止损/止盈），"
+                        "清理Storage记录并重置FSM状态"
+                    )
+                    
+                    # 删除Storage记录
+                    self.storage.delete_position(profile, symbol)
+                    
+                    # 重置FSM状态
+                    if fsm.state.name.startswith('POSITION'):
+                        fsm._reset()
+                        self._save_fsm_state(symbol, fsm)
+                        logger.info(f"{symbol}: FSM状态已重置为IDLE")
+                
+                elif not saved_pos and has_actual_position:
+                    # 实盘有持仓但Storage无记录（异常情况，理论上不应发生）
+                    actual_pos = actual_position_map[symbol]
+                    logger.error(
+                        f"{symbol}: 实盘有持仓 {actual_pos.position_id} 但Storage无记录！"
+                        "这可能是手动开仓或数据丢失，建议人工检查"
+                    )
+                    # 可选：发送告警通知
+                    if self.notifier and self.config.enable_telegram:
+                        self.notifier.notify_error(
+                            f"{symbol}: 检测到未记录的持仓 {actual_pos.position_id}",
+                            profile
+                        )
+            
+            logger.info("持仓同步完成")
+            
+        except Exception as e:
+            logger.error(f"持仓同步失败: {e}")
+            # 不阻断主流程，继续执行
 
     def _fetch_candles_with_retry(
         self,
