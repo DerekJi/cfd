@@ -55,16 +55,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── 2. Build deployment package ──
-      - name: Build deployment package
-        run: bash live/azure_function/deploy.sh build
+      # ── 2. Setup Python ──
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      # ── 3. Deploy to Azure Functions ──
+      # ── 3. Build deployment package ──
+      - name: Build deployment package
+        run: |
+          bash live/azure_function/deploy.sh build
+          pip install --target .azure_deploy/.python_packages/lib/site-packages -r .azure_deploy/requirements.txt
+
+      # ── 4. Deploy to Azure Functions ──
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
           package: .azure_deploy
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
+
