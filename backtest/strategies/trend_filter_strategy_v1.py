@@ -8,7 +8,7 @@ import backtrader as bt
 from indicators.range_detector import DonchianRangeDetector
 from indicators.atr_buffer import ATRBuffer
 from indicators.adx_indicator import ADX
-from indicators.trend_filter_fsm import TrendFilterStateMachine
+from core.fsm import TrendFilterStateMachine  # 使用 core/ 共享模块
 
 
 class TrendFilterStrategy(bt.Strategy):
@@ -124,32 +124,9 @@ class TrendFilterStrategy(bt.Strategy):
             print(f"{'='*80}\n")
     
     def _is_market_open_session(self, dt):
-        """
-        检查当前时间是否在市场开盘高波动时段（禁止交易）
-        
-        悉尼开盘: 07:00 Sydney = 21:00 UTC (标准时间) 或 20:00 UTC (夏令时)
-        东京开盘: 09:00 Tokyo = 00:00 UTC
-        
-        禁止交易窗口：开盘前后15分钟
-        """
-        # 获取UTC时间的小时和分钟
-        hour = dt.hour
-        minute = dt.minute
-        time_minutes = hour * 60 + minute  # 转换为分钟数（0-1439）
-        
-        # 东京开盘时段: 00:00 UTC (23:45-00:15)
-        tokyo_open = 0  # 00:00的分钟数
-        if (time_minutes >= tokyo_open - 15 and time_minutes <= tokyo_open + 15) or \
-           (time_minutes >= 1440 - 15):  # 跨日情况：23:45-23:59
-            return True, "东京开盘"
-        
-        # 悉尼开盘时段: 21:00 UTC 标准时间 (20:45-21:15)
-        # 简化处理：全年使用21:00（实际需根据夏令时调整）
-        sydney_open = 21 * 60  # 21:00的分钟数 = 1260
-        if time_minutes >= sydney_open - 15 and time_minutes <= sydney_open + 15:
-            return True, "悉尼开盘"
-        
-        return False, None
+        """委托给 core.risk_manager (共享实现)"""
+        from core.risk_manager import is_market_open_session
+        return is_market_open_session(dt)
     
     def notify_order(self, order):
         """订单状态通知"""
