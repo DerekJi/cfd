@@ -2,7 +2,7 @@
 # GitHub Actions — 自动部署到 Azure Functions (Consumption Plan)
 #
 # 触发条件: push to master (仅交易相关代码变更时)
-# 部署流程: checkout → build → deploy (via Publish Profile)
+# 部署流程: checkout → build → Oryx remote build on Azure
 #
 # ── 前提 ──
 #
@@ -12,9 +12,13 @@
 #      Azure Portal → cfd-py-forex → Overview → Download publish profile
 #      将下载的 XML 文件全部内容复制为此 secret
 #
-# 2. Azure Portal 环境变量 (一次性设置):
+# 2. Azure Portal → cfd-py-forex → Settings → Environment variables:
 #
-#    cfd-py-forex → Settings → Environment variables → 添加:
+#    ── 必需 (系统级) ──
+#      AzureWebJobsStorage         <Storage Account 连接字符串>
+#      FUNCTIONS_WORKER_RUNTIME    python
+#
+#    ── 必需 (业务级) ──
 #      ACTIVE_PROFILE              oanda_demo
 #      CFD_DRY_RUN                 true
 #      CFD_OANDA_API_KEY           <Oanda API Key>
@@ -22,6 +26,11 @@
 #      CFD_TELEGRAM_BOT_TOKEN      <Telegram Bot Token>
 #      CFD_TELEGRAM_CHAT_ID        <Telegram Chat ID>
 #      AZURE_STORAGE_CONNECTION    <可选，留空用本地存储>
+#
+#    ── 删除以下旧设置 (如果存在) ──
+#      WEBSITE_RUN_FROM_PACKAGE    ← 删除
+#      SCM_DO_BUILD_DURING_DEPLOYMENT  ← 删除 (由 Action 自动设置)
+#      ENABLE_ORYX_BUILD           ← 删除 (由 Action 自动设置)
 #
 # =============================================================
 
@@ -61,19 +70,28 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # ── 3. Build deployment package + install deps ──
+      # ── 3. Build deployment package (source only, no pip install) ──
       - name: Build deployment package
         run: |
           bash live/azure_function/deploy.sh build
-          cd .azure_deploy
-          pip install --target .python_packages/lib/site-packages -r requirements.txt --quiet
+          echo "=== Deployment package contents ==="
+          find .azure_deploy -type f | head -50
+          echo "=== Package size ==="
+          du -sh .azure_deploy
 
-      # ── 4. Deploy to Azure Functions (zip deploy, no remote build) ──
+      # ── 4. Deploy to Azure Functions (Oryx remote build) ──
+      #
+      # Linux Consumption Plan + Python 的推荐方式：
+      # 只上传源代码 + requirements.txt，Azure 服务器端用 Oryx 安装依赖。
+      # 这样 zip 包很小 (< 1MB)，避免大包 400 错误。
+      #
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
           package: .azure_deploy
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          scm-do-build-during-deployment: 'true'
+          enable-oryx-build: 'true'
           respect-funcignore: true
 
