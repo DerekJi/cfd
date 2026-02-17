@@ -18,6 +18,7 @@
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
@@ -132,8 +133,8 @@ class LiveEngine:
         profile = self.config.profile_name
         fsm = self.fsm_map[symbol]
 
-        # 1. 拉取 K 线数据
-        df = self.data_provider.get_candles(symbol, count=1000)
+        # 1. 拉取 K 线数据 (含最新 K 线 finalize 重试)
+        df = self._fetch_candles_with_retry(symbol)
         if df.empty or len(df) < 200:
             logger.warning(f"{symbol}: 数据不足 ({len(df)} bars), 跳过")
             return None
@@ -464,6 +465,59 @@ class LiveEngine:
     # ================================================================
     # 辅助方法
     # ================================================================
+
+    def _fetch_candles_with_retry(
+        self,
+        symbol: str,
+        max_retries: int = 3,
+        retry_interval: float = 5.0,
+    ) -> 'pd.DataFrame':
+        """
+        拉取 K 线数据，若最新 K 线未 finalize 则重试
+
+        M5 K 线在整 5 分钟收盘，CRON 在 :05 秒触发 + 冷启动约 10-25 秒，
+        正常情况下 K 线早已 finalize。此方法作为兜底保障。
+
+        重试策略: 最多 3 次，每次间隔 5 秒 (最长等待 15 秒)
+
+        Returns:
+            DataFrame: 已 finalize 的 K 线数据
+        """
+        now = datetime.now(timezone.utc)
+        # 计算预期的最新 M5 K 线开盘时间 (向下取整到 5 分钟)
+        expected_minute = (now.minute // 5) * 5
+        expected_bar_time = now.replace(minute=expected_minute, second=0, microsecond=0)
+
+        for attempt in range(max_retries):
+            df = self.data_provider.get_candles(symbol, count=1000)
+            if df.empty:
+                return df
+
+            last_bar_time = df.iloc[-1]['datetime']
+            if hasattr(last_bar_time, 'to_pydatetime'):
+                last_bar_time = last_bar_time.to_pydatetime()
+            if last_bar_time.tzinfo is None:
+                last_bar_time = last_bar_time.replace(tzinfo=timezone.utc)
+
+            # 最新 K 线时间 >= 预期时间 → finalize 完成
+            if last_bar_time >= expected_bar_time:
+                if attempt > 0:
+                    logger.info(f"{symbol}: K 线已 finalize (重试 {attempt} 次)")
+                return df
+
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"{symbol}: 最新 K 线 {last_bar_time} < 预期 {expected_bar_time}, "
+                    f"等待 {retry_interval}s 后重试 ({attempt+1}/{max_retries})"
+                )
+                time.sleep(retry_interval)
+
+        # 用尽重试，仍使用已有数据 (不阻塞后续品种)
+        logger.warning(
+            f"{symbol}: K 线未 finalize，使用已有数据 "
+            f"(last={last_bar_time}, expected={expected_bar_time})"
+        )
+        return df
 
     def _make_bar_data(
         self,

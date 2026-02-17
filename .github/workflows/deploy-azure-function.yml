@@ -1,0 +1,70 @@
+# =============================================================
+# GitHub Actions — 自动部署到 Azure Functions (Consumption Plan)
+#
+# 触发条件: push to master (仅交易相关代码变更时)
+# 部署流程: checkout → build → deploy (via Publish Profile)
+#
+# ── 前提 ──
+#
+# 1. GitHub Secret (Settings → Secrets and variables → Actions → Secrets):
+#
+#    AZURE_FUNCTIONAPP_PUBLISH_PROFILE
+#      Azure Portal → cfd-py-forex → Overview → Download publish profile
+#      将下载的 XML 文件全部内容复制为此 secret
+#
+# 2. Azure Portal 环境变量 (一次性设置):
+#
+#    cfd-py-forex → Settings → Environment variables → 添加:
+#      ACTIVE_PROFILE              oanda_demo
+#      CFD_DRY_RUN                 true
+#      CFD_OANDA_API_KEY           <Oanda API Key>
+#      CFD_OANDA_DEMO_OANDA_ACCOUNT_ID  <Oanda Account ID>
+#      CFD_TELEGRAM_BOT_TOKEN      <Telegram Bot Token>
+#      CFD_TELEGRAM_CHAT_ID        <Telegram Chat ID>
+#      AZURE_STORAGE_CONNECTION    <可选，留空用本地存储>
+#
+# =============================================================
+
+name: Deploy to Azure Functions
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'core/**'
+      - 'data/**'
+      - 'execution/**'
+      - 'storage/**'
+      - 'config/**'
+      - 'notification/**'
+      - 'live/**'
+      - '.github/workflows/deploy-azure-function.yml'
+  workflow_dispatch:  # 手动触发
+
+env:
+  AZURE_FUNCTIONAPP_NAME: cfd-py-forex
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Build deployment package ──
+      - name: Build deployment package
+        run: bash live/azure_function/deploy.sh build
+
+      # ── 3. Deploy to Azure Functions ──
+      - name: Deploy to Azure Functions
+        uses: azure/functions-action@v2
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: .azure_deploy
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
