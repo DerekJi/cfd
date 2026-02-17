@@ -87,12 +87,7 @@ jobs:
           cd ..
           echo "Zip size: $(du -sh deploy.zip | cut -f1)"
 
-      # ── 5. Deploy via Kudu REST API (pure Python, no curl) ──
-      #
-      # azure/functions-action@v1 has 400 bug on Linux Consumption.
-      # curl has exit-code-6 issue with special chars in publish-profile password.
-      # Pure Python urllib avoids both problems.
-      #
+      # ── 5. Deploy via Kudu REST API (pure Python urllib) ──
       - name: Deploy to Azure Functions
         env:
           PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
@@ -100,32 +95,62 @@ jobs:
           python3 << 'PYEOF'
           import xml.etree.ElementTree as ET
           import urllib.request, urllib.error
-          import base64, os, sys, time, json
+          import base64, os, sys, time, json, socket
 
           # ── 1. Parse publish profile ──
           pp = os.environ["PUBLISH_PROFILE"]
           root = ET.fromstring(pp)
-          profile = root.find(".//publishProfile[@publishMethod='MSDeploy']")
+
+          # Prefer ZipDeploy profile, fallback to MSDeploy
+          profile = root.find(".//publishProfile[@publishMethod='ZipDeploy']")
+          if profile is None:
+              profile = root.find(".//publishProfile[@publishMethod='MSDeploy']")
           if profile is None:
               profile = root.findall(".//publishProfile")[0]
 
           user = profile.attrib["userName"]
           pwd  = profile.attrib["userPWD"]
-          app  = os.environ["AZURE_FUNCTIONAPP_NAME"]
-          scm  = f"https://{app}.scm.azurewebsites.net"
+
+          # Use publishUrl from XML directly (don't construct it ourselves)
+          pub_url = profile.attrib.get("publishUrl", "")
+          if pub_url:
+              # Remove port suffix if present (e.g. ":443")
+              host = pub_url.split(":")[0] if ":" in pub_url and not pub_url.startswith("http") else pub_url
+              if host.startswith("http"):
+                  scm = host
+              else:
+                  scm = f"https://{host}"
+          else:
+              app = os.environ["AZURE_FUNCTIONAPP_NAME"]
+              scm = f"https://{app}.scm.azurewebsites.net"
+
           cred = base64.b64encode(f"{user}:{pwd}".encode()).decode()
           auth = f"Basic {cred}"
 
+          print(f"Profile method: {profile.attrib.get('publishMethod')}")
+          print(f"publishUrl (raw): {pub_url}")
           print(f"SCM URL:  {scm}")
           print(f"SCM user: {user}")
           print(f"Auth header length: {len(auth)}")
+
+          # ── DNS check ──
+          hostname = scm.replace("https://", "").replace("http://", "").split("/")[0]
+          print(f"\nDNS lookup: {hostname}")
+          try:
+              ip = socket.getaddrinfo(hostname, 443)[0][4][0]
+              print(f"  Resolved to: {ip}")
+          except Exception as e:
+              print(f"  DNS FAILED: {e}")
+              print("  This means the Azure Function App SCM site doesn't exist or is not accessible.")
+              print("  Please verify the app exists in Azure Portal.")
+              sys.exit(1)
 
           # ── 2. Health check ──
           print("\n=== SCM health check ===")
           try:
               req = urllib.request.Request(f"{scm}/api/settings",
                                            headers={"Authorization": auth})
-              resp = urllib.request.urlopen(req, timeout=30)
+              resp = urllib.request.urlopen(req, timeout=60)
               print(f"SCM health: HTTP {resp.status} OK")
           except urllib.error.HTTPError as e:
               print(f"SCM health: HTTP {e.code}")
