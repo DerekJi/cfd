@@ -87,111 +87,107 @@ jobs:
           cd ..
           echo "Zip size: $(du -sh deploy.zip | cut -f1)"
 
-      # ── 5. Deploy via Kudu REST API (bypass functions-action) ──
+      # ── 5. Deploy via Kudu REST API (pure Python, no curl) ──
       #
-      # azure/functions-action@v1 对 Linux Consumption Plan 有已知 400 Bug，
-      # 改用 curl 直接调用 Kudu zipdeploy API，更可靠且能看到完整错误。
-      # Oryx 远程构建由 Portal 环境变量 SCM_DO_BUILD_DURING_DEPLOYMENT=true 控制。
+      # azure/functions-action@v1 has 400 bug on Linux Consumption.
+      # curl has exit-code-6 issue with special chars in publish-profile password.
+      # Pure Python urllib avoids both problems.
       #
-      # Parse publish profile & deploy via python3 (avoids bash XML/special char issues)
       - name: Deploy to Azure Functions
         env:
           PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
         run: |
-          python3 - <<'PYEOF'
+          python3 << 'PYEOF'
           import xml.etree.ElementTree as ET
-          import subprocess, os, sys, time, json
+          import urllib.request, urllib.error
+          import base64, os, sys, time, json
 
-          # ── 1. Parse publish profile XML ──
+          # ── 1. Parse publish profile ──
           pp = os.environ["PUBLISH_PROFILE"]
           root = ET.fromstring(pp)
           profile = root.find(".//publishProfile[@publishMethod='MSDeploy']")
           if profile is None:
               profile = root.findall(".//publishProfile")[0]
 
-
           user = profile.attrib["userName"]
           pwd  = profile.attrib["userPWD"]
-          scm  = f"https://{os.environ['AZURE_FUNCTIONAPP_NAME']}.scm.azurewebsites.net"
+          app  = os.environ["AZURE_FUNCTIONAPP_NAME"]
+          scm  = f"https://{app}.scm.azurewebsites.net"
+          cred = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+          auth = f"Basic {cred}"
 
-          print(f"SCM user: {user}")
           print(f"SCM URL:  {scm}")
-          print(f"Password length: {len(pwd)}")
+          print(f"SCM user: {user}")
+          print(f"Auth header length: {len(auth)}")
 
           # ── 2. Health check ──
           print("\n=== SCM health check ===")
-          r = subprocess.run(
-              ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-               f"{scm}/api/settings", "-u", f"{user}:{pwd}", "--max-time", "30"],
-              capture_output=True, text=True
-          )
-          hc = r.stdout.strip()
-          print(f"SCM health: HTTP {hc}")
-          if r.returncode != 0:
-              print(f"curl error: exit {r.returncode}, stderr: {r.stderr}")
+          try:
+              req = urllib.request.Request(f"{scm}/api/settings",
+                                           headers={"Authorization": auth})
+              resp = urllib.request.urlopen(req, timeout=30)
+              print(f"SCM health: HTTP {resp.status} OK")
+          except urllib.error.HTTPError as e:
+              print(f"SCM health: HTTP {e.code}")
+              print(f"Response: {e.read().decode()[:500]}")
               sys.exit(1)
-          if int(hc) >= 400:
-              print(f"::error::SCM not reachable (HTTP {hc})")
+          except Exception as e:
+              print(f"SCM health check failed: {e}")
               sys.exit(1)
 
           # ── 3. ZIP deploy (async for Oryx remote build) ──
           print("\n=== Deploying via zipdeploy ===")
-          r = subprocess.run(
-              ["curl", "-s", "-o", "deploy_resp.txt", "-w", "%{http_code}",
-               "-D", "deploy_headers.txt",
-               "-X", "POST", f"{scm}/api/zipdeploy?isAsync=true",
-               "-u", f"{user}:{pwd}",
-               "-H", "Content-Type: application/octet-stream",
-               "--data-binary", "@deploy.zip",
-               "--max-time", "300"],
-              capture_output=True, text=True
-          )
-          code = r.stdout.strip()
-          print(f"Deploy response: HTTP {code}")
-          if r.returncode != 0:
-              print(f"curl error: exit {r.returncode}, stderr: {r.stderr}")
+          with open("deploy.zip", "rb") as f:
+              zip_data = f.read()
+          print(f"Zip size: {len(zip_data)} bytes ({len(zip_data)/1024/1024:.1f} MB)")
+
+          try:
+              req = urllib.request.Request(
+                  f"{scm}/api/zipdeploy?isAsync=true",
+                  data=zip_data,
+                  method="POST",
+                  headers={
+                      "Authorization": auth,
+                      "Content-Type": "application/octet-stream",
+                  })
+              resp = urllib.request.urlopen(req, timeout=300)
+              status_code = resp.status
+              location = resp.headers.get("Location", "")
+              body = resp.read().decode()
+              print(f"Deploy response: HTTP {status_code}")
+          except urllib.error.HTTPError as e:
+              print(f"::error::Deploy failed: HTTP {e.code}")
+              print(f"Response: {e.read().decode()[:2000]}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Deploy request failed: {e}")
               sys.exit(1)
 
-          if int(code) >= 400:
-              print("::error::Deployment failed")
-              with open("deploy_resp.txt") as f:
-                  print(f.read())
-              sys.exit(1)
-
-          # ── 4. Poll async status ──
-          if code == "202":
-              # Try to get Location header
-              poll_url = f"{scm}/api/deployments/latest"
-              try:
-                  with open("deploy_headers.txt") as f:
-                      for line in f:
-                          if line.lower().startswith("location:"):
-                              poll_url = line.split(":", 1)[1].strip()
-                              break
-              except: pass
-
+          # ── 4. Poll async build status ──
+          if status_code == 202:
+              poll_url = location if location else f"{scm}/api/deployments/latest"
               print(f"Async deploy started. Polling: {poll_url}")
-              for i in range(1, 31):
+              for i in range(1, 36):
                   time.sleep(10)
-                  r2 = subprocess.run(
-                      ["curl", "-s", poll_url, "-u", f"{user}:{pwd}"],
-                      capture_output=True, text=True
-                  )
                   try:
-                      d = json.loads(r2.stdout)
+                      req2 = urllib.request.Request(poll_url,
+                                                     headers={"Authorization": auth})
+                      resp2 = urllib.request.urlopen(req2, timeout=30)
+                      d = json.loads(resp2.read().decode())
                       st = d.get("status", "unknown")
-                  except:
-                      st = "unknown"
-                  print(f"  [{i}/30] Status: {st}")
+                  except Exception as ex:
+                      st = f"poll-error: {ex}"
+                  print(f"  [{i}/35] Status: {st}")
                   if st == 4:
                       print("Deployment succeeded!")
                       sys.exit(0)
                   elif st == 3:
                       print("::error::Remote build failed")
-                      print(json.dumps(d, indent=2))
+                      try: print(json.dumps(d, indent=2))
+                      except: pass
                       sys.exit(1)
-              print("::warning::Deploy still in progress after 5 min (may succeed later)")
+              print("::warning::Deploy still in progress after ~6 min (may succeed later)")
           else:
-              print(f"Deployment completed (HTTP {code})")
+              print(f"Deployment completed (HTTP {status_code})")
           PYEOF
 
