@@ -531,6 +531,9 @@ class LiveEngine:
                 # 实盘是否有该品种的持仓
                 has_actual_position = symbol in actual_position_map
                 
+                # 【增强检查】FSM 是否处于持仓状态
+                fsm_in_position = fsm.state.name.startswith('POSITION')
+                
                 if saved_pos and not has_actual_position:
                     # Storage有记录但实盘无持仓 → 已被自动平仓
                     trade_id = saved_pos.get('trade_id', 'N/A')
@@ -543,7 +546,7 @@ class LiveEngine:
                     self.storage.delete_position(profile, symbol)
                     
                     # 重置FSM状态
-                    if fsm.state.name.startswith('POSITION'):
+                    if fsm_in_position:
                         fsm._reset()
                         self._save_fsm_state(symbol, fsm)
                         logger.info(f"{symbol}: FSM状态已重置为IDLE")
@@ -561,6 +564,17 @@ class LiveEngine:
                             f"{symbol}: 检测到未记录的持仓 {actual_pos.position_id}",
                             profile
                         )
+                
+                elif fsm_in_position and not has_actual_position and not saved_pos:
+                    # 【新增】FSM处于持仓状态，但实盘无持仓且Storage无记录
+                    # 这种情况说明FSM状态不一致（可能是之前的bug或手动清理了Storage）
+                    logger.warning(
+                        f"{symbol}: FSM处于{fsm.state.value}状态，但实盘和Storage都无持仓，"
+                        "重置FSM状态"
+                    )
+                    fsm._reset()
+                    self._save_fsm_state(symbol, fsm)
+                    logger.info(f"{symbol}: FSM状态已重置为IDLE")
             
             logger.info("持仓同步完成")
             

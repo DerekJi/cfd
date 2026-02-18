@@ -63,6 +63,7 @@ backtest/reports/
 results/
 *.log
 download_log.txt
+state_check.txt
 
 # TA-Lib binaries
 ta_lib/
