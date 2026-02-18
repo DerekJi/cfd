@@ -21,6 +21,9 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
+from storage.azure_table import TABLE_EXECUTION_LOGS
+from timezone import timezone
 
 import azure.functions as func
 
@@ -121,6 +124,14 @@ def cfd_trading_tick(timer: func.TimerRequest) -> None:
         result = engine.tick()
 
         logger.info(f"Tick result: {json.dumps(result, ensure_ascii=False, default=str)}")
+
+        log_data = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'profile': profile_name,
+            'result': result,
+            'errors': result.get('errors', None),
+        }
+        storage._upsert(TABLE_EXECUTION_LOGS, profile_name, f'log_{log_data["timestamp"]}', log_data)
 
         if result.get('errors'):
             logger.error(f"Tick errors: {result['errors']}")

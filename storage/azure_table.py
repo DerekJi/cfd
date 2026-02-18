@@ -36,6 +36,7 @@ AZURITE_CONN_STRING = (
 
 TABLE_STATE = 'TradingState'
 TABLE_HISTORY = 'TradeHistory'
+TABLE_EXECUTION_LOGS = 'ExecutionLogs'
 
 
 class AzureTableStorage(StateStorage):
