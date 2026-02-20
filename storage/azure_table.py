@@ -61,6 +61,7 @@ class AzureTableStorage(StateStorage):
         # 确保表存在
         self._ensure_table(TABLE_STATE)
         self._ensure_table(TABLE_HISTORY)
+        self._ensure_table(TABLE_EXECUTION_LOGS)
 
     def _ensure_table(self, table_name: str):
         """创建表（如果不存在）"""
