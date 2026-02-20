@@ -36,6 +36,11 @@ STRATEGY_CONFIG = {
     'trailing_stop_enabled': True,  # 是否启用移动止损
 }
 
+# ==================== 策略选择 ====================
+STRATEGY_SELECTION = {
+    'strategy_name': 'trend_filter',  # 当前策略名称，可选值：'trend_filter', 'dual_direction_trend'
+}
+
 # ==================== 风险管理配置 ====================
 RISK_CONFIG = {
     'initial_capital': 10000,  # 初始资金（美元）

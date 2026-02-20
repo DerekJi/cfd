@@ -33,6 +33,8 @@ from core.forex_utils import get_pnl_factor, normalize_symbol
 from data.oanda_candles import OandaDataProvider
 from execution.base import TradeExecutor, OrderResult
 from storage.base import StateStorage
+from strategies.base_strategy import BaseStrategy
+from strategies.trend_filter_strategy import TrendFilterStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +81,16 @@ class LiveEngine:
                 max_total_drawdown_pct=config.bg_max_total_drawdown_pct,
             )
 
+        # 加载策略实例
+        self.strategies = self._load_strategies(config)
+
     # ================================================================
     # 主入口 — 每 5 分钟调用一次
     # ================================================================
 
     def tick(self) -> Dict[str, Any]:
         """
-        主循环：处理所有品种
+        主循环：处理所有策略和品种
 
         Returns:
             dict: {
@@ -108,21 +113,23 @@ class LiveEngine:
         if self.risk_limits:
             self._restore_risk_limits()
 
-        # 【核心修复】同步持仓状态：清理已平仓的记录和FSM状态
+        # 同步持仓状态
         self._sync_positions()
 
-        for sym_config in self.config.symbols:
-            symbol = sym_config.oanda_name
-            try:
-                action_summary = self._process_symbol(sym_config)
-                if action_summary:
-                    result['actions'][symbol] = action_summary
-            except Exception as e:
-                err_msg = f"{symbol}: {type(e).__name__}: {e}"
-                logger.exception(err_msg)
-                result['errors'].append(err_msg)
-                if self.notifier and self.config.enable_telegram:
-                    self.notifier.notify_error(err_msg, self.config.profile_name)
+        # 遍历策略和品种
+        for strategy_name, strategy in self.strategies.items():
+            for sym_config in self.config.symbols:
+                symbol = sym_config.oanda_name
+                try:
+                    action_summary = strategy.process_symbol(symbol, {})
+                    if action_summary:
+                        result['actions'][symbol] = action_summary
+                except Exception as e:
+                    err_msg = f"{symbol}: {type(e).__name__}: {e}"
+                    logger.exception(err_msg)
+                    result['errors'].append(err_msg)
+                    if self.notifier and self.config.enable_telegram:
+                        self.notifier.notify_error(err_msg, self.config.profile_name)
 
         return result
 

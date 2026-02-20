@@ -2,7 +2,11 @@
 趋势过滤策略配置文件
 """
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
+
+# backtest/ 目录的绝对路径，确保无论从哪个目录运行都能找到数据文件
+_BACKTEST_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 @dataclass
@@ -38,8 +42,8 @@ class TrendFilterConfig:
     initial_cash: float = 10000.0
     commission: float = 0.0  # 佣金（每笔交易）
     
-    # 数据参数
-    data_path: str = "./data/GBP_USD_M5.csv"
+    # 数据参数（默认使用 backtest/data/ 下的文件，支持绝对路径覆盖）
+    data_path: str = field(default_factory=lambda: os.path.join(_BACKTEST_DIR, "data", "GBP_USD_M5.csv"))
     
     # 调试
     debug: bool = True
