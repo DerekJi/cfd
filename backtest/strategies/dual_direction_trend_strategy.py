@@ -65,6 +65,12 @@ class DualDirectionTrendStrategy(bt.Strategy):
         ('min_lot', 0.01),
         ('max_lot', 10.0),
 
+        # 开仓报告
+        ('enable_trade_report', False),  # True = 每次开仓生成 Markdown + K 线图报告
+        ('symbol', 'UNKNOWN'),            # 品种名，用于报告文件名
+        ('report_dir', ''),               # 报告输出目录；为空时自动推断
+        ('max_reports', 0),               # 最多生成几份报告（0 = 不限制）
+
         # 调试
         ('debug', True),
     )
@@ -101,6 +107,7 @@ class DualDirectionTrendStrategy(bt.Strategy):
         # ---- 统计 ----
         self.traded_count = 0
         self.blocked_by_session = 0
+        self._report_trade_seq = 0  # 报告序号（全局递增）
 
         if self.params.debug:
             print(f"\n{'='*80}")
@@ -460,6 +467,7 @@ class DualDirectionTrendStrategy(bt.Strategy):
             'atr_at_entry': self.atr[0],
         }
         self.traded_count += 1
+        self._report_trade_seq += 1
 
         if self.params.debug:
             print(f"\n{'='*60}")
@@ -467,6 +475,17 @@ class DualDirectionTrendStrategy(bt.Strategy):
                   f"dist={trailing_dist:.5f}  size={size:.0f}")
             print(f"   fractal_low={self._latest_fractal_low:.5f}  ATR={self.atr[0]:.5f}")
             print(f"{'='*60}")
+
+        if self.params.enable_trade_report:
+            max_r = self.params.max_reports
+            if max_r > 0 and self._report_trade_seq > max_r:
+                return
+            reason = (
+                f"lowerEMA({self.params.ema_fast_len}/{self.params.ema_slow_len}) > "
+                f"EMA{self.params.ema_base_len}，组合K线收盘突破 upperEMA，最低刺穿 lowerEMA，"
+                f"阳线，收盘为近20根K线最高价，分形低点=${self._latest_fractal_low:.5f}"
+            )
+            self._generate_entry_report('long', entry_price, stop_loss, reason)
 
     def _enter_short(self):
         from core.risk_manager import is_market_open_session
@@ -499,6 +518,7 @@ class DualDirectionTrendStrategy(bt.Strategy):
             'atr_at_entry': self.atr[0],
         }
         self.traded_count += 1
+        self._report_trade_seq += 1
 
         if self.params.debug:
             print(f"\n{'='*60}")
@@ -506,6 +526,86 @@ class DualDirectionTrendStrategy(bt.Strategy):
                   f"dist={trailing_dist:.5f}  size={size:.0f}")
             print(f"   fractal_high={self._latest_fractal_high:.5f}  ATR={self.atr[0]:.5f}")
             print(f"{'='*60}")
+
+        if self.params.enable_trade_report:
+            max_r = self.params.max_reports
+            if max_r > 0 and self._report_trade_seq > max_r:
+                return
+            reason = (
+                f"upperEMA({self.params.ema_fast_len}/{self.params.ema_slow_len}) < "
+                f"EMA{self.params.ema_base_len}，组合K线收盘跌破 lowerEMA，最高刺穿 upperEMA，"
+                f"阴线，分形高点=${self._latest_fractal_high:.5f}"
+            )
+            self._generate_entry_report('short', entry_price, stop_loss, reason)
+
+    # ================================================================
+    # 开仓报告生成
+    # ================================================================
+
+    def _generate_entry_report(self, side: str, entry_price: float, stop_loss: float, reason: str):
+        """收集当前 200 根 K 线数据，调用报告生成器输出 Markdown + PNG。"""
+        try:
+            import sys
+            import os
+            # 将 backtest 目录加入 sys.path，确保能找到 utils
+            _bt_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _bt_dir not in sys.path:
+                sys.path.insert(0, _bt_dir)
+            from utils.trade_report_generator import generate_entry_report
+
+            n_bars = min(200, len(self.data))
+            # backtrader get() 已经是 [最旧, ..., 最新] 顺序，无需 reversed
+            raw_dt  = list(self.data.datetime.get(size=n_bars))
+            raw_o   = list(self.data.open.get(size=n_bars))
+            raw_h   = list(self.data.high.get(size=n_bars))
+            raw_l   = list(self.data.low.get(size=n_bars))
+            raw_c   = list(self.data.close.get(size=n_bars))
+            raw_v   = list(self.data.volume.get(size=n_bars))
+            raw_ef  = list(self.ema_fast.get(size=n_bars))
+            raw_es  = list(self.ema_slow.get(size=n_bars))
+            raw_eb  = list(self.ema_base.get(size=n_bars))
+
+            import backtrader as _bt
+            bar_dts = [_bt.num2date(v) for v in raw_dt]
+
+            # 确定报告目录
+            report_dir = self.params.report_dir
+            if not report_dir:
+                report_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'results', 'trade_reports',
+                )
+
+            md_path = generate_entry_report(
+                report_dir=report_dir,
+                symbol=self.params.symbol,
+                timeframe='M5',
+                trade_id=self._report_trade_seq,
+                side=side,
+                dt=bar_dts[-1],
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                atr=self.atr[0],
+                account_balance=self.broker.get_value(),
+                reason=reason,
+                bar_datetimes=bar_dts,
+                bar_opens=raw_o,
+                bar_highs=raw_h,
+                bar_lows=raw_l,
+                bar_closes=raw_c,
+                bar_volumes=raw_v,
+                ema_fast=raw_ef,
+                ema_slow=raw_es,
+                ema_base=raw_eb,
+                ema_fast_len=self.params.ema_fast_len,
+                ema_slow_len=self.params.ema_slow_len,
+                ema_base_len=self.params.ema_base_len,
+            )
+            if self.params.debug:
+                print(f"  📄 报告已生成: {os.path.basename(md_path)}")
+        except Exception as exc:
+            if self.params.debug:
+                print(f"  ⚠️ 报告生成失败: {exc}")
 
     def stop(self):
         if self.params.debug:

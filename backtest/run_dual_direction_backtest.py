@@ -102,6 +102,11 @@ def run_dual_direction_backtest(config=None):
         min_lot=config.min_lot,
         max_lot=config.max_lot,
         debug=config.debug,
+        # 开仓报告
+        symbol=symbol_name,
+        enable_trade_report=config.enable_trade_report,
+        report_dir=config.report_dir,
+        max_reports=config.max_reports,
     )
 
     cerebro.broker.set_cash(config.initial_cash)
@@ -226,6 +231,12 @@ if __name__ == '__main__':
                         help='风险百分比 (默认: 1.0)')
     parser.add_argument('--no-debug', action='store_true',
                         help='关闭详细日志（加快速度）')
+    parser.add_argument('--report', action='store_true',
+                        help='开启开仓报告生成（markdown + K线图）')
+    parser.add_argument('--report-dir', type=str, default='',
+                        help='报告输出目录，默认 backtest/results/trade_reports/')
+    parser.add_argument('--max-reports', type=int, default=0,
+                        help='最多生成报告数（0=不限制）')
     args = parser.parse_args()
 
     symbol_map = {
@@ -245,6 +256,11 @@ if __name__ == '__main__':
     config.data_path = os.path.join(_BACKTEST_DIR, 'data', data_file)
     config.risk_percent = args.risk
     config.debug = not args.no_debug
+    config.enable_trade_report = args.report
+    config.report_dir = args.report_dir or os.path.join(
+        _BACKTEST_DIR, 'results', 'trade_reports', symbol_clean
+    )
+    config.max_reports = args.max_reports
 
     print(f"📊 测试品种: {symbol_clean}")
     print(f"📁 数据文件: {config.data_path}")

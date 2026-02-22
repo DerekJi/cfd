@@ -51,6 +51,11 @@ class DualDirectionConfig:
     # 调试
     debug: bool = True
 
+    # 开仓报告
+    enable_trade_report: bool = False
+    report_dir: str = ''      # 为空时由回测脚本自动推断
+    max_reports: int = 0      # 0 = 不限制；>0 = 最多生成 N 份报告
+
 
 def get_default_config() -> DualDirectionConfig:
     return DualDirectionConfig()
