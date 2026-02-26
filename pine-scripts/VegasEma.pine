@@ -1,0 +1,96 @@
+//@version=6
+indicator(title = 'Vegas Visual Pro v4 (Trailing SL)', shorttitle = 'Vegas_Trailing', overlay = true)
+
+// --- 1. 核心指标计算 ---
+ema12   = ta.ema(close, 12)
+ema144  = ta.ema(close, 144)
+ema169  = ta.ema(close, 169)
+ema576  = ta.ema(close, 576)
+ema676  = ta.ema(close, 676)
+atr     = ta.atr(14)
+
+// 边界计算
+upperFastAtr = math.max(ema144, ema169) + (atr * 0.5)
+lowerFastAtr = math.min(ema144, ema169) - (atr * 0.5)
+upperSlowAtr = math.max(ema576, ema676) + atr
+lowerSlowAtr = math.min(ema576, ema676) - atr
+
+// 避让区间
+is_avoiding = (lowerFastAtr < upperSlowAtr and upperFastAtr > lowerSlowAtr)
+
+// --- 2. 状态变量记录 ---
+var float trailSL = na
+var bool  inLong  = false
+var bool  inShort = false
+var float entryP  = na
+var bool  breakevenReached = false
+
+// --- 3. 信号触发 ---
+longSig  = (ema144 > ema576) and not is_avoiding and ta.crossover(ema12, math.max(ema144, ema169))
+shortSig = (ema144 < ema576) and not is_avoiding and ta.crossunder(ema12, math.min(ema144, ema169))
+
+// --- 4. 移动止损逻辑控制 ---
+// 多头逻辑
+if longSig and not inLong
+    inLong  := true
+    inShort := false
+    entryP  := close
+    trailSL := lowerFastAtr
+    breakevenReached := false
+    label.new(bar_index, low, "BUY", color=color.green, textcolor=color.white, style=label.style_label_up)
+
+if inLong
+    // 检查是否达到 1.5倍 ATR 开启保本
+    if high >= entryP + (atr * 1.5)
+        breakevenReached := true
+    
+    // 动态调整 SL：一旦开启保本，SL 至少为 entryP；随后跟随 EMA12 且只能上移
+    float currentTargetSL = breakevenReached ? math.max(entryP, ema12) : trailSL
+    trailSL := math.max(trailSL, currentTargetSL)
+    
+    // 离场检查
+    if close < trailSL
+        inLong := false
+        label.new(bar_index, high, "EXIT", color=color.gray)
+        trailSL := na
+
+// 空头逻辑
+if shortSig and not inShort
+    inShort := true
+    inLong  := false
+    entryP  := close
+    trailSL := upperFastAtr
+    breakevenReached := false
+    label.new(bar_index, high, "SELL", color=color.red, textcolor=color.white, style=label.style_label_down)
+
+if inShort
+    if low <= entryP - (atr * 1.5)
+        breakevenReached := true
+    
+    float currentTargetSL = breakevenReached ? math.min(entryP, ema12) : trailSL
+    trailSL := math.min(trailSL, currentTargetSL)
+    
+    if close > trailSL
+        inShort := false
+        label.new(bar_index, low, "EXIT", color=color.gray)
+        trailSL := na
+
+// --- 5. 绘图 ---
+
+plot(upperFastAtr, color = color.new(color.blue, 70), title = 'Upper ATR', style = plot.style_circles)
+plot(lowerFastAtr, color = color.new(color.blue, 70), title = 'Lower ATR', style = plot.style_circles)
+plot(upperSlowAtr, color = color.new(color.gray, 70), title = 'Upper ATR', style = plot.style_circles)
+plot(lowerSlowAtr, color = color.new(color.gray, 70), title = 'Lower ATR', style = plot.style_circles)
+
+plot(ema12, color = color.new(#af9f0e, 0), title = 'EMA12')
+p1 = plot(ema144, color = color.red)
+p2 = plot(ema169, color = color.new(color.red, 70))
+fill(p1, p2, color = color.new(color.red, 90))
+
+p3 = plot(ema576, color = color.gray)
+p4 = plot(ema676, color = color.new(color.gray, 70))
+fill(p3, p4, color = color.new(color.gray, 95))
+
+// 绘制动态止损线 (阶梯状)
+plot(trailSL, color=color.new(color.orange, 0), style=plot.style_linebr, linewidth=2, title="Dynamic SL")
+bgcolor(is_avoiding ? color.new(color.gray, 92) : na)
