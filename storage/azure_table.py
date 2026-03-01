@@ -161,3 +161,69 @@ class AzureTableStorage(StateStorage):
         except Exception as e:
             logger.error(f"Failed to get trade records: {e}")
             return []
+
+    # ---- 半自动策略：观察列表 ----
+
+    def save_watchlist(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        self._upsert(TABLE_STATE, profile, 'semi_watchlist', {'items': items})
+
+    def load_watchlist(self, profile: str) -> List[Dict[str, Any]]:
+        data = self._get(TABLE_STATE, profile, 'semi_watchlist')
+        return data.get('items', []) if data else []
+
+    # ---- 半自动策略：趋势激活池 ----
+
+    def save_trend_pool(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        self._upsert(TABLE_STATE, profile, 'semi_trend_pool', {'items': items})
+
+    def load_trend_pool(self, profile: str) -> List[Dict[str, Any]]:
+        data = self._get(TABLE_STATE, profile, 'semi_trend_pool')
+        return data.get('items', []) if data else []
+
+    # ---- 半自动策略：待确认信号 ----
+
+    def save_pending_signal(
+        self, profile: str, symbol: str, signal: Dict[str, Any]
+    ) -> None:
+        self._upsert(TABLE_STATE, profile, f'semi_pending_{symbol}', signal)
+
+    def load_pending_signal(
+        self, profile: str, symbol: str
+    ) -> Optional[Dict[str, Any]]:
+        return self._get(TABLE_STATE, profile, f'semi_pending_{symbol}')
+
+    def delete_pending_signal(self, profile: str, symbol: str) -> None:
+        self._delete(TABLE_STATE, profile, f'semi_pending_{symbol}')
+
+    # ---- 半自动策略：免打扰状态 ----
+
+    def save_symbol_dnd(self, profile: str, symbol: str, expiry_iso: str) -> None:
+        self._upsert(TABLE_STATE, profile, f'semi_dnd_{symbol}', {'expiry': expiry_iso})
+
+    def load_symbol_dnd(self, profile: str, symbol: str) -> Optional[str]:
+        data = self._get(TABLE_STATE, profile, f'semi_dnd_{symbol}')
+        if not data:
+            return None
+        expiry = data.get('expiry')
+        if expiry is None:
+            return None
+        # 检查是否已过期
+        try:
+            expiry_dt = datetime.fromisoformat(expiry)
+            if expiry_dt <= datetime.now(timezone.utc):
+                # 已过期，清理并返回 None
+                self.clear_symbol_dnd(profile, symbol)
+                return None
+        except (ValueError, TypeError):
+            return None
+        return expiry
+
+    def clear_symbol_dnd(self, profile: str, symbol: str) -> None:
+        self._delete(TABLE_STATE, profile, f'semi_dnd_{symbol}')
+
+    def save_global_dnd(self, profile: str, slots: List[Dict[str, Any]]) -> None:
+        self._upsert(TABLE_STATE, profile, 'semi_dnd_global', {'slots': slots})
+
+    def load_global_dnd(self, profile: str) -> List[Dict[str, Any]]:
+        data = self._get(TABLE_STATE, profile, 'semi_dnd_global')
+        return data.get('slots', []) if data else []

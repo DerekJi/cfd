@@ -105,3 +105,80 @@ class LocalJsonStorage(StateStorage):
         records = self._read_json(path) or []
         # 最新在前
         return list(reversed(records[-limit:]))
+
+    # ---- 半自动策略：观察列表 ----
+
+    def save_watchlist(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        path = self._get_path(profile, 'semi_watchlist.json')
+        self._write_json(path, items)
+
+    def load_watchlist(self, profile: str) -> List[Dict[str, Any]]:
+        path = self._get_path(profile, 'semi_watchlist.json')
+        return self._read_json(path) or []
+
+    # ---- 半自动策略：趋势激活池 ----
+
+    def save_trend_pool(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        path = self._get_path(profile, 'semi_trend_pool.json')
+        self._write_json(path, items)
+
+    def load_trend_pool(self, profile: str) -> List[Dict[str, Any]]:
+        path = self._get_path(profile, 'semi_trend_pool.json')
+        return self._read_json(path) or []
+
+    # ---- 半自动策略：待确认信号 ----
+
+    def save_pending_signal(
+        self, profile: str, symbol: str, signal: Dict[str, Any]
+    ) -> None:
+        path = self._get_path(profile, f'semi_pending_{symbol}.json')
+        self._write_json(path, signal)
+
+    def load_pending_signal(
+        self, profile: str, symbol: str
+    ) -> Optional[Dict[str, Any]]:
+        path = self._get_path(profile, f'semi_pending_{symbol}.json')
+        return self._read_json(path)
+
+    def delete_pending_signal(self, profile: str, symbol: str) -> None:
+        path = self._get_path(profile, f'semi_pending_{symbol}.json')
+        if os.path.exists(path):
+            os.remove(path)
+
+    # ---- 半自动策略：免打扰状态 ----
+
+    def save_symbol_dnd(self, profile: str, symbol: str, expiry_iso: str) -> None:
+        path = self._get_path(profile, f'semi_dnd_{symbol}.json')
+        self._write_json(path, {'expiry': expiry_iso})
+
+    def load_symbol_dnd(self, profile: str, symbol: str) -> Optional[str]:
+        path = self._get_path(profile, f'semi_dnd_{symbol}.json')
+        data = self._read_json(path)
+        if not data:
+            return None
+        expiry = data.get('expiry')
+        if expiry is None:
+            return None
+        # 检查是否已过期
+        try:
+            expiry_dt = datetime.fromisoformat(expiry)
+            if expiry_dt <= datetime.now(timezone.utc):
+                # 已过期，清理文件并返回 None
+                self.clear_symbol_dnd(profile, symbol)
+                return None
+        except (ValueError, TypeError):
+            return None
+        return expiry
+
+    def clear_symbol_dnd(self, profile: str, symbol: str) -> None:
+        path = self._get_path(profile, f'semi_dnd_{symbol}.json')
+        if os.path.exists(path):
+            os.remove(path)
+
+    def save_global_dnd(self, profile: str, slots: List[Dict[str, Any]]) -> None:
+        path = self._get_path(profile, 'semi_dnd_global.json')
+        self._write_json(path, slots)
+
+    def load_global_dnd(self, profile: str) -> List[Dict[str, Any]]:
+        path = self._get_path(profile, 'semi_dnd_global.json')
+        return self._read_json(path) or []
