@@ -6,6 +6,8 @@
 
 import sys
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from datetime import datetime
 
 # 设置UTF-8编码
@@ -255,9 +257,10 @@ if __name__ == '__main__':
     start_time = time.time()
     
     # 修改配置
-    from config_trend_filter import get_default_config
+    import os as _os
+    from config_trend_filter import get_default_config, _BACKTEST_DIR
     config = get_default_config()
-    config.data_path = f'./data/{data_file}'
+    config.data_path = _os.path.join(_BACKTEST_DIR, 'data', data_file)
     config.risk_percent = args.risk
     
     print(f"📊 测试品种: {symbol_clean}")

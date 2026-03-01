@@ -1,5 +1,11 @@
 {
     "files.associations": {
         "*.pine": "pine"
+    },
+    "chat.tools.terminal.autoApprove": {
+        "/^python backtest/run_trend_filter_backtest\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

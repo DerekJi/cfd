@@ -1,0 +1,122 @@
+//@version=5
+indicator("Dual-Direction Trend Trailing System", overlay=true, max_labels_count=500)
+
+// --- 参数设置 ---
+emaFastLen = input.int(5, "快线周期")
+emaSlowLen = input.int(20, "慢线周期")
+emaBase = input.int(200, "基线EMA")
+volSmaLen = input.int(10, "成交量均线周期")
+volMult = input.float(1.1, "成交量倍数")
+atrLen = input.int(14, "ATR 周期")
+checkVolume = input.bool(false, "成交量检测")
+
+// --- 基础指标计算 ---
+ema5 = ta.ema(close, emaFastLen)
+ema20 = ta.ema(close, emaSlowLen)
+ema200 = ta.ema(close, emaBase)
+volSma = ta.sma(volume, volSmaLen)
+atr = ta.atr(atrLen)
+
+// 分形高低点计算 (用于初始止损)
+isFractalDown = low[2] < low[0] and low[2] < low[1] and low[2] < low[3] and low[2] < low[4]
+isFractalUp   = high[2] > high[0] and high[2] > high[1] and high[2] > high[3] and high[2] > high[4]
+
+var float latestFractalLow = na
+var float latestFractalHigh = na
+if isFractalDown
+    latestFractalLow := low[2]
+if isFractalUp
+    latestFractalHigh := high[2]
+
+// --- 状态变量 (使用 1 表示多单, -1 表示空单, 0 表示空仓) ---
+var int positionDir = 0 // 0: None, 1: Long, -1: Short
+var float entryPrice = na
+var float currentStopLoss = na
+var float trailingDist = na
+var float atrAtEntry = na
+var int entryBarIndex = na
+
+// --- 组合 K 线逻辑 (模拟 merge) ---
+mergedLow = math.min(low, low[1])
+mergedHigh = math.max(high, high[1])
+mergedOpen = open[1]
+mergedClose = close
+
+lowerEma = math.min(ema5, ema20, ema5[1], ema20[1])
+upperEma = math.max(ema5, ema20, ema5[1], ema20[1])
+volCondition = checkVolume ? volume > volSma * volMult : true
+
+// --- 信号判定 ---
+// 多单：收盘在 EMA 上方且最低点穿过 EMA 下方
+isLongSignal  = lowerEma > ema200 and mergedClose > upperEma and mergedLow < lowerEma and mergedClose > mergedOpen and volCondition
+// 空单：收盘在 EMA 下方且最高点穿过 EMA 上方
+isShortSignal = upperEma < ema200 and mergedClose < lowerEma and mergedHigh > upperEma and mergedClose < mergedOpen and volCondition
+
+// --- 持仓管理与止损更新 ---
+if positionDir != 0
+    if positionDir == 1 // 多单逻辑
+        if low <= currentStopLoss
+            if currentStopLoss <= entryPrice
+                label.new(bar_index, high, "多单止损\nPrice: " + str.tostring(currentStopLoss, "#.##"), color=color.gray, style=label.style_label_down, textcolor=color.white)
+            else
+                label.new(bar_index, high, "多单止盈\nPrice: " + str.tostring(currentStopLoss, "#.##"), color=color.rgb(149, 223, 175), style=label.style_label_down, textcolor=color.black)
+            positionDir := 0
+        else
+            // 追踪止损更新
+            bool isAlreadySafe = (currentStopLoss >= entryPrice)
+            if not isAlreadySafe
+                if (close - entryPrice) >= atrAtEntry
+                    currentStopLoss := entryPrice + (0.1 * atrAtEntry)
+            else
+                targetSL = math.max(ema20 - (0.5 * atr), close - trailingDist)
+                if targetSL > currentStopLoss
+                    currentStopLoss := targetSL
+
+    else if positionDir == -1 // 空单逻辑
+        if high >= currentStopLoss
+            if currentStopLoss >= entryPrice
+                label.new(bar_index, low, "空单止损\nPrice: " + str.tostring(currentStopLoss, "#.##"), color=color.gray, style=label.style_label_down, textcolor=color.white)
+            else
+                label.new(bar_index, low, "空单止盈\nPrice: " + str.tostring(currentStopLoss, "#.##"), color=color.rgb(234, 133, 100), style=label.style_label_down, textcolor=color.white)
+            positionDir := 0
+        else
+            // 追踪止损更新 (空单向上浮盈是价格下跌)
+            bool isAlreadySafe = (currentStopLoss <= entryPrice)
+            if not isAlreadySafe
+                if (entryPrice - close) >= atrAtEntry
+                    currentStopLoss := entryPrice - (0.1 * atrAtEntry)
+            else
+                // 空单止损向下追踪：取 EMA 加上偏移 和 价格追踪 的较小值
+                targetSL = math.min(ema20 + (0.5 * atr), close + trailingDist)
+                if targetSL < currentStopLoss
+                    currentStopLoss := targetSL
+
+// --- 入场执行 ---
+if positionDir == 0 // 仅在空仓时检查
+    if isLongSignal and not na(latestFractalLow)
+        positionDir := 1
+        entryPrice := close
+        entryBarIndex := bar_index
+        atrAtEntry := atr
+        currentStopLoss := latestFractalLow - 0.5 * atr
+        trailingDist := entryPrice - currentStopLoss
+        label.new(bar_index, low, "多入\nSL:" + str.tostring(currentStopLoss, "#.##"), color=color.green, style=label.style_label_up, textcolor=color.white)
+        
+    else if isShortSignal and not na(latestFractalHigh)
+        positionDir := -1
+        entryPrice := close
+        entryBarIndex := bar_index
+        atrAtEntry := atr
+        currentStopLoss := latestFractalHigh + 0.5 * atr
+        trailingDist := currentStopLoss - entryPrice
+        label.new(bar_index, high, "空入\nSL:" + str.tostring(currentStopLoss, "#.##"), color=color.red, style=label.style_label_down, textcolor=color.white)
+
+// --- 绘图 ---
+plot(positionDir != 0 ? currentStopLoss : na, "Dynamic SL", color=positionDir == 1 ? color.red : color.maroon, style=plot.style_stepline, linewidth=2)
+plotshape(bar_index == entryBarIndex and positionDir == 1, "Long Arrow", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(bar_index == entryBarIndex and positionDir == -1, "Short Arrow", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+// 辅助线
+plot(ema5, color=color.new(color.blue, 50))
+plot(ema20, color=color.new(color.orange, 0))
+plot(ema200, color=color.new(#84827f, 0))

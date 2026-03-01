@@ -10,7 +10,7 @@ API 文档: https://developer.oanda.com/rest-live-v20/instrument-ep/
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Dict, List, Optional
 
 import httpx
 import pandas as pd
@@ -122,6 +122,33 @@ class OandaDataProvider:
         if not df.empty:
             df['datetime'] = pd.to_datetime(df['datetime'])
         return df
+
+    def get_multi_timeframe(
+        self,
+        instrument: str,
+        granularities: List[str],
+        count: int = 200,
+        price: str = 'M',
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        批量获取多个周期的K线数据
+
+        用于半自动策略同时拉取 H1 和 5M 数据。
+
+        Args:
+            instrument:    品种名 (Oanda 格式, 如 'EUR_USD')
+            granularities: 时间粒度列表, 如 ['H1', 'M5']
+            count:         每个周期抓取的K线数量 (默认 200)
+            price:         价格类型 ('M'=mid, 'B'=bid, 'A'=ask)
+
+        Returns:
+            Dict[granularity, DataFrame]: 每个周期对应的 K 线 DataFrame
+            例如: {'H1': df_h1, 'M5': df_m5}
+        """
+        result: Dict[str, pd.DataFrame] = {}
+        for granularity in granularities:
+            result[granularity] = self.get_candles(instrument, granularity, count, price)
+        return result
 
     def get_last_completed_candle_time(
         self, instrument: str, granularity: str = 'M5'

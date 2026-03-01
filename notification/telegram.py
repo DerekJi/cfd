@@ -153,6 +153,40 @@ class TelegramNotifier:
         )
         return self._send(text)
 
+    def send_photo(self, image_bytes: bytes, caption: str = '') -> bool:
+        """
+        发送图片消息（sendPhoto API）
+
+        Parameters
+        ----------
+        image_bytes : bytes
+            PNG/JPEG 格式的图像字节流，例如由 utils.chart_generator.generate_ema_chart() 返回。
+        caption : str, optional
+            图片说明文字，支持 HTML 格式，最多 1024 个字符。
+
+        Returns
+        -------
+        bool
+            发送成功返回 True，失败返回 False。
+        """
+        try:
+            resp = self._client.post(
+                f'{TELEGRAM_API}/bot{self._bot_token}/sendPhoto',
+                data={
+                    'chat_id': self._chat_id,
+                    'caption': caption,
+                    'parse_mode': 'HTML',
+                },
+                files={
+                    'photo': ('chart.png', image_bytes, 'image/png'),
+                },
+            )
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Telegram send_photo failed: {e}")
+            return False
+
     def close(self):
         """关闭 HTTP 客户端"""
         self._client.close()

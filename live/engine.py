@@ -33,6 +33,9 @@ from core.forex_utils import get_pnl_factor, normalize_symbol
 from data.oanda_candles import OandaDataProvider
 from execution.base import TradeExecutor, OrderResult
 from storage.base import StateStorage
+from storage.azure_table import AzureTableStorage
+from strategies.base_strategy import BaseStrategy
+from strategies.trend_filter_strategy import TrendFilterStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +88,7 @@ class LiveEngine:
 
     def tick(self) -> Dict[str, Any]:
         """
-        主循环：处理所有品种
+        主循环：处理所有策略和品种
 
         Returns:
             dict: {
@@ -108,9 +111,10 @@ class LiveEngine:
         if self.risk_limits:
             self._restore_risk_limits()
 
-        # 【核心修复】同步持仓状态：清理已平仓的记录和FSM状态
+        # 同步持仓状态
         self._sync_positions()
 
+        # 遍历所有品种
         for sym_config in self.config.symbols:
             symbol = sym_config.oanda_name
             try:
@@ -123,6 +127,14 @@ class LiveEngine:
                 result['errors'].append(err_msg)
                 if self.notifier and self.config.enable_telegram:
                     self.notifier.notify_error(err_msg, self.config.profile_name)
+
+        # 记录执行日志
+        if isinstance(self.storage, AzureTableStorage):
+            self.storage.log_execution(self.config.profile_name, {
+                'timestamp': result['timestamp'],
+                'actions': result['actions'],
+                'errors': result['errors'],
+            })
 
         return result
 

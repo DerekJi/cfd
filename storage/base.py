@@ -1,7 +1,7 @@
 """
 StateStorage 抽象基类
 
-定义 FSM 状态 / 持仓 / 日内盈亏 / 交易记录 的存取接口。
+定义 FSM 状态 / 持仓 / 日内盈亏 / 交易记录 / 半自动策略状态 的存取接口。
 """
 
 from abc import ABC, abstractmethod
@@ -76,4 +76,76 @@ class StateStorage(ABC):
         self, profile: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
         """获取最近的交易记录"""
+        ...
+
+    # ---- 半自动策略：观察列表 ----
+
+    @abstractmethod
+    def save_watchlist(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        """保存观察列表（全量覆盖写）"""
+        ...
+
+    @abstractmethod
+    def load_watchlist(self, profile: str) -> List[Dict[str, Any]]:
+        """加载观察列表，不存在返回空列表"""
+        ...
+
+    # ---- 半自动策略：趋势激活池 ----
+
+    @abstractmethod
+    def save_trend_pool(self, profile: str, items: List[Dict[str, Any]]) -> None:
+        """保存趋势激活池（全量覆盖写）"""
+        ...
+
+    @abstractmethod
+    def load_trend_pool(self, profile: str) -> List[Dict[str, Any]]:
+        """加载趋势激活池，不存在返回空列表"""
+        ...
+
+    # ---- 半自动策略：待确认信号 ----
+
+    @abstractmethod
+    def save_pending_signal(
+        self, profile: str, symbol: str, signal: Dict[str, Any]
+    ) -> None:
+        """保存单品种待确认信号"""
+        ...
+
+    @abstractmethod
+    def load_pending_signal(
+        self, profile: str, symbol: str
+    ) -> Optional[Dict[str, Any]]:
+        """加载单品种待确认信号，不存在返回 None"""
+        ...
+
+    @abstractmethod
+    def delete_pending_signal(self, profile: str, symbol: str) -> None:
+        """删除单品种待确认信号（开仓或取消后调用）"""
+        ...
+
+    # ---- 半自动策略：免打扰状态 ----
+
+    @abstractmethod
+    def save_symbol_dnd(self, profile: str, symbol: str, expiry_iso: str) -> None:
+        """设置单品种免打扰到期时间（ISO 8601 UTC 字符串）"""
+        ...
+
+    @abstractmethod
+    def load_symbol_dnd(self, profile: str, symbol: str) -> Optional[str]:
+        """读取单品种免打扰到期时间，不存在或已过期则返回 None"""
+        ...
+
+    @abstractmethod
+    def clear_symbol_dnd(self, profile: str, symbol: str) -> None:
+        """清除单品种免打扰"""
+        ...
+
+    @abstractmethod
+    def save_global_dnd(self, profile: str, slots: List[Dict[str, Any]]) -> None:
+        """保存全局免打扰时段列表（全量覆盖写，元素为 DndTimeSlot.to_dict()）"""
+        ...
+
+    @abstractmethod
+    def load_global_dnd(self, profile: str) -> List[Dict[str, Any]]:
+        """加载全局免打扰时段列表，不存在返回空列表"""
         ...

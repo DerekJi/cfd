@@ -76,6 +76,18 @@ class ProfileConfig:
     # ---- 策略参数 ----
     risk_percent: float = 1.0             # 单品种单笔风险 %
 
+    # ---- 策略配置 ----
+    strategies: dict = field(default_factory=lambda: {
+        "trend_filter": {
+            "param1": "value1",
+            "param2": "value2",
+        },
+        "dual_direction_trend": {
+            "param1": "value1",
+            "param2": "value2",
+        },
+    })
+
     # ---- Blue Guardian 风控 ----
     enable_bg_risk_limits: bool = False
     bg_max_single_loss_pct: float = 0.01  # 1%

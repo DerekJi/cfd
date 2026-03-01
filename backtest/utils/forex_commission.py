@@ -285,6 +285,31 @@ class ForexCommissionInfo(bt.CommInfoBase):
         return int(cash / margin)
 
 
+# 每品种标准手合约规格 (单位: 基础资产)
+# 外汇: 1 手 = 100,000 单位基础货币
+# 黄金(XAUUSD): 1 手 = 100 盎司
+# 白银(XAGUSD): 1 手 = 5,000 盎司
+CONTRACT_SIZE_MAP = {
+    'XAUUSD': 100,
+    'XAU_USD': 100,
+    'XAGUSD': 5000,
+    'XAG_USD': 5000,
+}
+
+
+def get_contract_size(symbol):
+    """
+    返回品种的每手合约大小 (单位数量)
+
+    Args:
+        symbol: 品种名称 (如 'XAUUSD', 'GBPUSD')
+
+    Returns:
+        int: 每标准手合约大小
+    """
+    return CONTRACT_SIZE_MAP.get(symbol.upper(), 100000)
+
+
 def create_forex_commission(symbol, commission_per_lot=0.0, leverage=30.0, lot_size=100000):
     """
     工厂函数: 根据品种创建对应的ForexCommissionInfo
