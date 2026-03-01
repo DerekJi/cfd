@@ -6,9 +6,14 @@
     "ACTIVE_PROFILE": "oanda_demo",
     "CFD_DRY_RUN": "true",
     "CFD_OANDA_API_KEY": "",
+    "CFD_OANDA_ENVIRONMENT": "practice",
     "CFD_OANDA_DEMO_OANDA_ACCOUNT_ID": "",
     "CFD_TELEGRAM_BOT_TOKEN": "",
     "CFD_TELEGRAM_CHAT_ID": "",
-    "AZURE_STORAGE_CONNECTION": ""
+    "AZURE_STORAGE_CONNECTION": "",
+    "_comment_semi_auto": "--- 半自动 EMA 趋势跟踪策略 (Phase 5-6) ---",
+    "SA_PROFILE": "oanda_demo",
+    "CFD_SA_ACCOUNT_SIZE": "100000",
+    "CFD_TELEGRAM_WEBHOOK_SECRET": ""
   }
 }

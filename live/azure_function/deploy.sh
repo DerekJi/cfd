@@ -41,7 +41,7 @@ build() {
     cp "$SCRIPT_DIR/requirements.txt" "$BUILD_DIR/"
 
     # 复制项目模块 (只复制 .py 文件，不复制 __pycache__)
-    for module in core data execution storage config notification live; do
+    for module in core data execution storage config notification live utils strategies; do
         if [ -d "$PROJECT_ROOT/$module" ]; then
             mkdir -p "$BUILD_DIR/$module"
             find "$PROJECT_ROOT/$module" -name "*.py" -not -path "*__pycache__*" | while read f; do
