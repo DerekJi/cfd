@@ -149,3 +149,34 @@ class StateStorage(ABC):
     def load_global_dnd(self, profile: str) -> List[Dict[str, Any]]:
         """加载全局免打扰时段列表，不存在返回空列表"""
         ...
+
+    # ---- 交易事件日志 ----
+
+    @abstractmethod
+    def log_trade_event(self, profile: str, event: Dict[str, Any]) -> None:
+        """
+        记录一条交易事件日志，用于事后审计与排查。
+
+        event 字段约定:
+          event_type  : str   — 事件类型，如 entry_success / entry_skip /
+                                entry_blocked / entry_error /
+                                signal_risk_fail / open_success / open_fail
+          source      : str   — 来源 engine 或 semi_auto
+          symbol      : str
+          direction   : str   — long / short
+          entry_price : float
+          stop_loss   : float
+          stop_dist   : float
+          units_calc  : float — 计算所得仓位（未经最终舍入）
+          units_final : int   — 最终下单手数，未开仓时为 0
+          atr         : float
+          account_balance    : float
+          account_currency   : str
+          account_usd_rate   : float
+          estimated_risk_usd : float — 按计算仓位估算的最大亏损（USD）
+          reason      : str   — 拒绝 / 跳过 原因；成功时为空
+          detail      : str   — 补充说明
+          trade_id    : str   — 成交后平台返回的 trade id
+          fill_price  : float — 实际成交价
+        """
+        ...

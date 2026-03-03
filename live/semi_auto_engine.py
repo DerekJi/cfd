@@ -381,6 +381,21 @@ class SemiAutoEngine:
                 except Exception:
                     balance = self._account_size
                     cash_available = self._account_size
+                    account_info = None
+
+                # 账户本位币 → USD 汇率（保证 risk_amount 与 pnl_factor 单位一致）
+                account_usd_rate = 1.0
+                acct_ccy = 'USD'
+                try:
+                    acct_ccy = (account_info.currency.upper()
+                                if account_info and account_info.currency else 'USD')
+                    if acct_ccy != 'USD':
+                        rate_sym = f'{acct_ccy}_USD'
+                        fetched = self._dp.get_current_mid_price(rate_sym)
+                        if fetched and fetched > 0:
+                            account_usd_rate = fetched
+                except Exception:
+                    pass
 
                 units = calculate_position_size(
                     symbol=symbol,
@@ -392,11 +407,26 @@ class SemiAutoEngine:
                     num_symbols=1,
                     current_atr=atr_5m,
                     cash_available=cash_available,
+                    account_usd_rate=account_usd_rate,
                 )
 
                 if units <= 0:
                     logger.info(
                         f"[5M scan] {symbol} position size=0, risk check failed"
+                    )
+                    self._log_trade_event(
+                        event_type='signal_risk_fail',
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        stop_loss=sl_price,
+                        atr=atr_5m,
+                        units_calc=0,
+                        account_balance=balance,
+                        account_currency=acct_ccy,
+                        account_usd_rate=account_usd_rate,
+                        reason='position_size_zero',
+                        detail=f'balance={balance:.2f}, stop_dist={abs(entry_price - sl_price):.5f}',
                     )
                     skipped.append(f"{symbol}(risk_check)")
                     continue
@@ -486,8 +516,61 @@ class SemiAutoEngine:
         except Exception as e:
             logger.error(f"[5M notify] {symbol} chart/send error: {e}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 开仓执行（由 /open 触发）
+    # ─────────────────────────────────────────────────────────────────────────    # 交易事件日志辅助
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _log_trade_event(
+        self,
+        event_type: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        atr: float,
+        units_calc: float,
+        account_balance: float,
+        account_currency: str,
+        account_usd_rate: float,
+        reason: str = '',
+        detail: str = '',
+        units_final: int = 0,
+        trade_id: str = '',
+        fill_price: Optional[float] = None,
+    ) -> None:
+        """
+        将半自动引擎的开仓相关事件写入 storage.log_trade_event()。
+        任何写入异常均静默处理，不影响主流程。
+        """
+        try:
+            from core.forex_utils import get_pnl_factor
+            pnl_factor = get_pnl_factor(symbol, entry_price)
+            stop_dist = abs(entry_price - stop_loss)
+            risk_usd = round(stop_dist * max(units_calc, 0) * pnl_factor, 2)
+            event: Dict[str, Any] = {
+                'event_type': event_type,
+                'source': 'semi_auto',
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': round(entry_price, 5),
+                'stop_loss': round(stop_loss, 5),
+                'stop_dist': round(stop_dist, 5),
+                'units_calc': round(units_calc, 2),
+                'units_final': units_final,
+                'atr': round(atr, 5),
+                'account_balance': round(account_balance, 2),
+                'account_currency': account_currency,
+                'account_usd_rate': round(account_usd_rate, 5),
+                'estimated_risk_usd': risk_usd,
+                'reason': reason,
+                'detail': detail,
+                'trade_id': trade_id,
+                'fill_price': round(fill_price, 5) if fill_price else None,
+            }
+            self._storage.log_trade_event(self._profile, event)
+        except Exception as e:
+            logger.warning(f'_log_trade_event failed (symbol={symbol}): {e}')
+
+    # ─────────────────────────────────────────────────────────────────────────────    # 开仓执行（由 /open 触发）
     # ─────────────────────────────────────────────────────────────────────────
 
     def execute_open(self, symbol: str) -> Dict[str, Any]:
@@ -530,6 +613,21 @@ class SemiAutoEngine:
                 f"execute_open {symbol} success: fill={result.fill_price} "
                 f"units={result.units} trade_id={result.trade_id}"
             )
+            self._log_trade_event(
+                event_type='open_success',
+                symbol=symbol,
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                atr=0.0,
+                units_calc=float(signal.position_size),
+                account_balance=0.0,
+                account_currency='',
+                account_usd_rate=0.0,
+                units_final=int(abs(result.units or signal.position_size)),
+                trade_id=str(result.trade_id or ''),
+                fill_price=result.fill_price,
+            )
             # 顺手发送确认通知
             try:
                 self._notifier._send(
@@ -552,6 +650,20 @@ class SemiAutoEngine:
             }
         else:
             logger.error(f"execute_open {symbol} failed: {result.error}")
+            self._log_trade_event(
+                event_type='open_fail',
+                symbol=symbol,
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                atr=0.0,
+                units_calc=float(signal.position_size),
+                account_balance=0.0,
+                account_currency='',
+                account_usd_rate=0.0,
+                reason='place_order_failed',
+                detail=str(result.error or ''),
+            )
             return {'success': False, 'error': result.error or 'place_order failed'}
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -99,6 +99,12 @@ class ProfileConfig:
     telegram_chat_id: str = ''
     enable_telegram: bool = False
 
+    # ---- 账户货币 → USD 转换率 ----
+    # 当账户货币非 USD 时（如 AUD），仓位计算中的 risk_amount 单位是账户货币，
+    # 而 pnl_factor 输出的是 USD，需要乘以此汇率才能正确折算。
+    # USD 账户保持默认 1.0；AUD 账户约 0.63（可通过 CFD_ACCOUNT_TO_USD_RATE 设置）。
+    account_to_usd_rate: float = 1.0
+
     @property
     def num_symbols(self) -> int:
         return len(self.symbols)
@@ -164,6 +170,8 @@ def load_profile(profile_name: str) -> ProfileConfig:
             telegram_bot_token=tg_token,
             telegram_chat_id=tg_chat,
             enable_telegram=bool(tg_token and tg_chat),
+            # AUD 账户：仓位风险需折算为 USD；通过 CFD_ACCOUNT_TO_USD_RATE 动态配置
+            account_to_usd_rate=float(env('ACCOUNT_TO_USD_RATE', '0.63')),
         )
 
     elif profile_name == 'blue_guardian':
@@ -191,6 +199,8 @@ def load_profile(profile_name: str) -> ProfileConfig:
             telegram_bot_token=tg_token,
             telegram_chat_id=tg_chat,
             enable_telegram=bool(tg_token and tg_chat),
+            # blue_guardian 是 USD 账户，无需转换
+            account_to_usd_rate=1.0,
         )
 
     else:

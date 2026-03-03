@@ -40,6 +40,7 @@ AZURITE_CONN_STRING = (
 TABLE_STATE = 'TradingState'
 TABLE_HISTORY = 'TradeHistory'
 TABLE_EXECUTION_LOGS = 'ExecutionLogs'
+TABLE_TRADE_EVENTS = 'TradeEvents'
 
 
 class AzureTableStorage(StateStorage):
@@ -65,6 +66,7 @@ class AzureTableStorage(StateStorage):
         self._ensure_table(TABLE_STATE)
         self._ensure_table(TABLE_HISTORY)
         self._ensure_table(TABLE_EXECUTION_LOGS)
+        self._ensure_table(TABLE_TRADE_EVENTS)
 
     def _ensure_table(self, table_name: str):
         """创建表（如果不存在）"""
@@ -237,3 +239,39 @@ class AzureTableStorage(StateStorage):
         """记录执行日志"""
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         self._upsert(TABLE_EXECUTION_LOGS, profile, timestamp, log)
+
+    # ---- 交易事件日志 ----
+
+    def log_trade_event(self, profile: str, event: Dict[str, Any]) -> None:
+        """
+        写入 TradeEvents 表。
+
+        每个字段单独存储（不用 data JSON 包裹），方便在 Azure Storage Explorer
+        中直接查阅，无需额外反序列化。
+        RowKey 格式: YYYYmmdd_HHMMSS_fff_{symbol}_{event_type}
+        """
+        ts = datetime.now(timezone.utc)
+        ts_str = ts.strftime('%Y%m%d_%H%M%S_') + f'{ts.microsecond // 1000:03d}'
+        symbol = str(event.get('symbol', 'UNKNOWN'))
+        event_type = str(event.get('event_type', 'unknown'))
+        rk = f'{ts_str}_{symbol}_{event_type}'
+
+        client = self._get_table_client(TABLE_TRADE_EVENTS)
+        entity: Dict[str, Any] = {
+            'PartitionKey': profile,
+            'RowKey': rk,
+            'logged_at': ts.isoformat(),
+        }
+        # 将 event 中每个字段扁平写入 entity（跳过 None，复杂类型转 str）
+        for k, v in event.items():
+            if v is None:
+                continue
+            if isinstance(v, (bool, int, float, str)):
+                entity[k] = v
+            else:
+                entity[k] = str(v)
+
+        try:
+            client.upsert_entity(entity)
+        except Exception as e:
+            logger.error(f'log_trade_event failed (rk={rk}): {e}')

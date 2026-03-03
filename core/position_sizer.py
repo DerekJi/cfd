@@ -6,7 +6,7 @@
 """
 
 from typing import Optional
-from core.forex_utils import get_pair_type, get_quote_usd_rate, calculate_margin
+from core.forex_utils import get_pair_type, get_quote_usd_rate, calculate_margin, get_pnl_factor
 
 
 # ============================================================
@@ -36,6 +36,7 @@ def calculate_position_size(
     max_lot: float = 10.0,
     leverage: float = DEFAULT_LEVERAGE,
     quote_usd_rate: Optional[float] = None,
+    account_usd_rate: float = 1.0,
     debug: bool = False,
 ) -> float:
     """
@@ -48,22 +49,26 @@ def calculate_position_size(
         entry_price:        入场价格
         stop_loss:          止损价格
         short:              是否做空
-        total_account_size: 总账户规模 (USD / AUD 等账户货币)
+        total_account_size: 总账户规模 (账户本币，如 AUD 账户传 AUD 金额)
         risk_percent:       单品种单笔风险% (如 1.0 = 1%)
         num_symbols:        同时交易品种数
         current_atr:        当前 ATR 值
-        cash_available:     可用现金
+        cash_available:     可用现金 (账户本币)
         min_lot:            最小手数 (默认 0.01)
         max_lot:            最大手数 (默认 10.0)
         leverage:           杠杆倍数 (默认 30)
         quote_usd_rate:     交叉货币对的 quote→USD 汇率 (None=自动检测)
+        account_usd_rate:   账户本币→USD 汇率，USD 账户传 1.0 (默认)，
+                            AUD 账户传 AUD/USD 汇率 (如 0.63)。
+                            用于将账户本币风险金额折算为 USD，保证
+                            pnl_factor (USD 单位) 与 risk_amount 单位一致。
         debug:              是否输出调试信息
 
     Returns:
         float: 仓位大小 (units)。0 表示拒绝交易。
     """
-    # ---- 风险金额 ----
-    risk_amount = (total_account_size * risk_percent / 100.0) / num_symbols
+    # ---- 风险金额 (折算为 USD，与 pnl_factor 单位统一) ----
+    risk_amount = (total_account_size * risk_percent / 100.0) / num_symbols * account_usd_rate
 
     # ---- 止损距离 ----
     if short:
@@ -82,20 +87,25 @@ def calculate_position_size(
         return 0.0
 
     # ---- PnL 因子 ----
+    # 与 forex_utils.get_pnl_factor() 保持完全一致:
+    #   direct   (XXX/USD): pnl_factor = 1.0
+    #   indirect (USD/XXX): pnl_factor = 1.0 / entry_price
+    #   cross              : pnl_factor = quote_usd_rate
+    # 注意: 旧写法对所有非cross品种都用 1/entry_price，导致 direct pair 严重偏差
     if quote_usd_rate is None:
         quote_usd_rate = get_quote_usd_rate(symbol)
 
-    if quote_usd_rate > 0:
-        pnl_factor = quote_usd_rate
-    else:
-        # direct/indirect 统一用 1/entry_price
-        pnl_factor = 1.0 / entry_price
+    pnl_factor = get_pnl_factor(symbol, entry_price)
+    # cross pair 且 rate 未知时，get_pnl_factor 返回 0.0 — 用 1/entry_price 保守兜底
+    if pnl_factor == 0.0:
+        pnl_factor = 1.0 / entry_price if entry_price > 0 else 1.0
 
     # ---- 基本仓位 ----
     size = risk_amount / (stop_distance * pnl_factor * SLIPPAGE_PROTECTION)
 
     # ---- ATR 仓位上限 (Bug #12 修复) ----
-    max_single_loss = total_account_size * MAX_SINGLE_LOSS_PCT
+    # max_single_loss 需折算为 USD，与 pnl_factor 单位统一
+    max_single_loss = total_account_size * account_usd_rate * MAX_SINGLE_LOSS_PCT
     max_safe_size = max_single_loss / (current_atr * ATR_WORST_CASE * pnl_factor)
 
     if size > max_safe_size:
@@ -113,8 +123,10 @@ def calculate_position_size(
             return 0.0
 
     # ---- 保证金限制 (Bug #10 修复) ----
+    # margin_needed 由 calculate_margin 计算，结果为 USD
+    # cash_available 为账户本币，需折算为 USD 再比较
     margin_needed = calculate_margin(symbol, size, entry_price, leverage)
-    max_margin = cash_available * MAX_MARGIN_RATIO
+    max_margin = cash_available * account_usd_rate * MAX_MARGIN_RATIO
 
     if margin_needed > max_margin:
         scale = max_margin / margin_needed

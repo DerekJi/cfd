@@ -182,3 +182,16 @@ class LocalJsonStorage(StateStorage):
     def load_global_dnd(self, profile: str) -> List[Dict[str, Any]]:
         path = self._get_path(profile, 'semi_dnd_global.json')
         return self._read_json(path) or []
+
+    # ---- 交易事件日志 ----
+
+    def log_trade_event(self, profile: str, event: Dict[str, Any]) -> None:
+        """
+        追加到 trade_events.jsonl 文件（JSON Lines 格式）。
+
+        每行一条事件，方便 grep / jq 等工具检索。
+        """
+        path = self._get_path(profile, 'trade_events.jsonl')
+        event['logged_at'] = datetime.now(timezone.utc).isoformat()
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(event, ensure_ascii=False) + '\n')

@@ -214,6 +214,59 @@ class LiveEngine:
     # 开仓处理
     # ================================================================
 
+    def _log_entry_event(
+        self,
+        event_type: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        atr: float,
+        units_calc: float,
+        account_balance: float,
+        account_currency: str,
+        account_usd_rate: float,
+        reason: str = '',
+        detail: str = '',
+        units_final: int = 0,
+        trade_id: str = '',
+        fill_price: Optional[float] = None,
+    ) -> None:
+        """
+        将开仓相关事件写入 storage.log_trade_event()。
+
+        无论开仓成功还是因为仓位计算、风控等原因被跳过/拒绝，都调用此方法，
+        确保每次信号触发都有完整记录，方便事后审计与排查。
+        任何写入异常均静默处理，不影响主流程。
+        """
+        try:
+            pnl_factor = get_pnl_factor(symbol, entry_price)
+            stop_dist = abs(entry_price - stop_loss)
+            risk_usd = round(stop_dist * max(units_calc, 0) * pnl_factor, 2)
+            event: Dict[str, Any] = {
+                'event_type': event_type,
+                'source': 'engine',
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': round(entry_price, 5),
+                'stop_loss': round(stop_loss, 5),
+                'stop_dist': round(stop_dist, 5),
+                'units_calc': round(units_calc, 2),
+                'units_final': units_final,
+                'atr': round(atr, 5),
+                'account_balance': round(account_balance, 2),
+                'account_currency': account_currency,
+                'account_usd_rate': round(account_usd_rate, 5),
+                'estimated_risk_usd': risk_usd,
+                'reason': reason,
+                'detail': detail,
+                'trade_id': trade_id,
+                'fill_price': round(fill_price, 5) if fill_price else None,
+            }
+            self.storage.log_trade_event(self.config.profile_name, event)
+        except Exception as e:
+            logger.warning(f"_log_entry_event failed (symbol={symbol}): {e}")
+
     def _handle_entry(
         self,
         sym_config: SymbolConfig,
@@ -226,12 +279,29 @@ class LiveEngine:
         profile = self.config.profile_name
         is_short = action['action'] == 'entry_short'
         side = 'sell' if is_short else 'buy'
+        direction = 'short' if is_short else 'long'
 
         entry_price = action['entry_price']
         stop_loss = action['stop_loss']
 
         # 获取账户信息
         account = self.executor.get_account_info()
+
+        # 账户本位币 → USD 汇率 (用于仓位计算币种归一化)
+        # USD 账户 rate=1.0；其他货币 (如 AUD) 实时从 Oanda 取汇率，失败时用配置兜底
+        account_usd_rate = self.config.account_to_usd_rate  # 默认使用配置值
+        acct_ccy = account.currency.upper() if account.currency else 'USD'
+        if acct_ccy != 'USD':
+            rate_symbol = f'{acct_ccy}_USD'
+            fetched = self.data_provider.get_current_mid_price(rate_symbol)
+            if fetched and fetched > 0:
+                account_usd_rate = fetched
+                logger.debug(f"账户 {acct_ccy}/USD 实时汇率: {account_usd_rate:.5f}")
+            else:
+                logger.warning(
+                    f"无法获取 {rate_symbol} 实时汇率，使用配置兜底值 {account_usd_rate:.4f}"
+                    f"（如需更新请设置环境变量 CFD_ACCOUNT_TO_USD_RATE）"
+                )
 
         # 仓位计算
         units = calculate_position_size(
@@ -247,12 +317,20 @@ class LiveEngine:
             min_lot=self.config.min_lot,
             max_lot=self.config.max_lot,
             leverage=self.config.leverage,
+            account_usd_rate=account_usd_rate,
         )
 
         if units <= 0:
             logger.info(f"{symbol}: 仓位计算 = 0, 跳过")
             fsm._reset()
             self._save_fsm_state(symbol, fsm)
+            self._log_entry_event(
+                'entry_skip', symbol, direction, entry_price, stop_loss,
+                bar_data['atr'], units_calc=0,
+                account_balance=account.balance, account_currency=acct_ccy,
+                account_usd_rate=account_usd_rate,
+                reason='position_size_zero',
+            )
             return {'action': 'skip', 'reason': 'position_size_zero'}
 
         # 最小单位数检查
@@ -260,6 +338,14 @@ class LiveEngine:
             logger.info(f"{symbol}: units {units:.0f} < min {self.config.min_units}, 跳过")
             fsm._reset()
             self._save_fsm_state(symbol, fsm)
+            self._log_entry_event(
+                'entry_skip', symbol, direction, entry_price, stop_loss,
+                bar_data['atr'], units_calc=units,
+                account_balance=account.balance, account_currency=acct_ccy,
+                account_usd_rate=account_usd_rate,
+                reason='below_min_units',
+                detail=f'units={units:.0f} < min={self.config.min_units}',
+            )
             return {'action': 'skip', 'reason': 'below_min_units'}
 
         # Blue Guardian 风控检查
@@ -273,6 +359,14 @@ class LiveEngine:
                 self._save_fsm_state(symbol, fsm)
                 if self.notifier and self.config.enable_telegram:
                     self.notifier.notify_risk_alert('开仓拒绝', f"{symbol}: {reason}", profile)
+                self._log_entry_event(
+                    'entry_blocked', symbol, direction, entry_price, stop_loss,
+                    bar_data['atr'], units_calc=units,
+                    account_balance=account.balance, account_currency=acct_ccy,
+                    account_usd_rate=account_usd_rate,
+                    reason=reason,
+                    detail=f'estimated_loss={estimated_loss:.2f}',
+                )
                 return {'action': 'blocked', 'reason': reason}
 
         # 执行下单
@@ -294,6 +388,14 @@ class LiveEngine:
             self._save_fsm_state(symbol, fsm)
             if self.notifier and self.config.enable_telegram:
                 self.notifier.notify_error(f"下单失败 {symbol}: {order_result.error}", profile)
+            self._log_entry_event(
+                'entry_error', symbol, direction, entry_price, stop_loss,
+                bar_data['atr'], units_calc=units,
+                account_balance=account.balance, account_currency=acct_ccy,
+                account_usd_rate=account_usd_rate,
+                reason='order_failed',
+                detail=str(order_result.error or ''),
+            )
             return {'action': 'error', 'error': order_result.error}
 
         # 保存持仓
@@ -329,6 +431,15 @@ class LiveEngine:
                 profile=profile,
             )
 
+        self._log_entry_event(
+            'entry_success', symbol, direction, entry_price, stop_loss,
+            bar_data['atr'], units_calc=units,
+            account_balance=account.balance, account_currency=acct_ccy,
+            account_usd_rate=account_usd_rate,
+            units_final=int(units),
+            trade_id=str(order_result.trade_id or ''),
+            fill_price=order_result.fill_price or entry_price,
+        )
         return {'action': action['action'], 'units': units, 'trade_id': order_result.trade_id}
 
     # ================================================================
@@ -553,15 +664,33 @@ class LiveEngine:
                         f"{symbol}: 检测到持仓 {trade_id} 已被平台自动平仓（止损/止盈），"
                         "清理Storage记录并重置FSM状态"
                     )
-                    
+
                     # 删除Storage记录
                     self.storage.delete_position(profile, symbol)
-                    
-                    # 重置FSM状态
-                    if fsm_in_position:
-                        fsm._reset()
-                        self._save_fsm_state(symbol, fsm)
-                        logger.info(f"{symbol}: FSM状态已重置为IDLE")
+
+                    # 【修复】每次tick都新建LiveEngine，内存FSM始终为IDLE，
+                    # 不能依赖 fsm_in_position 判断，必须无条件重置Storage中的FSM状态。
+                    # 否则下一个tick会从Storage恢复POSITION状态，触发exit但找不到持仓，
+                    # 导致持续输出 no_position。
+                    fsm._reset()
+                    self._save_fsm_state(symbol, fsm)
+                    logger.info(f"{symbol}: FSM状态已重置为IDLE")
+
+                    # 发送自动平仓 Telegram 通知
+                    if self.notifier and self.config.enable_telegram:
+                        side = saved_pos.get('side', 'unknown')
+                        entry_price = saved_pos.get('entry_price', 0)
+                        units = saved_pos.get('units', 0)
+                        entry_time = saved_pos.get('entry_time', '')
+                        hold_time = self._calc_hold_time(entry_time)
+                        self.notifier.notify_risk_alert(
+                            '自动平仓',
+                            f"{symbol} ({side}) 已被平台自动平仓（止损/止盈）\n"
+                            f"trade_id: {trade_id}\n"
+                            f"入场: {entry_price:.5f} | 仓位: {units:.0f} units\n"
+                            f"持仓时长: {hold_time}",
+                            profile,
+                        )
                 
                 elif not saved_pos and has_actual_position:
                     # 实盘有持仓但Storage无记录（异常情况，理论上不应发生）

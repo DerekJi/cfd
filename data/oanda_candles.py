@@ -166,6 +166,27 @@ class OandaDataProvider:
             return None
         return df.iloc[-1]['datetime'].to_pydatetime()
 
+    def get_current_mid_price(self, instrument: str) -> Optional[float]:
+        """
+        获取品种当前 mid 价（最近一根 M5 K线收盘价）
+
+        用于获取账户本位币兑 USD 的实时汇率。
+
+        Args:
+            instrument: Oanda 品种代码，如 'AUD_USD'
+
+        Returns:
+            float 价格，或 None（获取失败时）
+        """
+        try:
+            df = self.get_candles(instrument, granularity='M5', count=2)
+            if df.empty:
+                return None
+            return float(df.iloc[-1]['close'])
+        except Exception as e:
+            logger.warning(f"get_current_mid_price({instrument}) failed: {e}")
+            return None
+
     def close(self):
         """关闭 HTTP 客户端"""
         self._client.close()
